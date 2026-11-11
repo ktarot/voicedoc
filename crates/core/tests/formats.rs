@@ -95,3 +95,34 @@ fn exports_all_formats() {
     let second = export::unique_path(dir.path(), "주간 회의", Format::Pdf);
     assert!(second.ends_with("주간 회의 (2).pdf"));
 }
+
+/// 길이가 변환 단위(2048 표본)의 정확한 배수이거나 아주 짧은 파일도 읽어야 한다.
+#[test]
+fn resamples_any_length() {
+    let dir = tempfile::tempdir().unwrap();
+    for (rate, frames) in [(44_100u32, 2048usize * 40), (44_100, 2048 * 40 + 1), (48_000, 2048), (48_000, 100), (8_000, 2048 * 3), (22_050, 5000)] {
+        let mut wav = Vec::new();
+        let data_len = (frames * 2) as u32;
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&rate.to_le_bytes());
+        wav.extend_from_slice(&(rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for i in 0..frames {
+            let v = ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 12_000.0) as i16;
+            wav.extend_from_slice(&v.to_le_bytes());
+        }
+        let path = dir.path().join(format!("{rate}-{frames}.wav"));
+        std::fs::write(&path, wav).unwrap();
+        let out = audio::decode_file(&path, |_| {}, &Cancel::new())
+            .unwrap_or_else(|e| panic!("{rate}Hz {frames}표본: {e}"));
+        assert_eq!(out.len(), frames * 16_000 / rate as usize, "{rate}Hz {frames}표본");
+    }
+}

@@ -75,20 +75,20 @@ impl MonoResampler {
     fn finish(mut self, input_frames: u64, rate: u32) -> Result<Vec<f32>> {
         if let Some(mut rs) = self.inner.take() {
             let expected = (input_frames as u128 * SAMPLE_RATE as u128 / rate as u128) as usize;
-            let tail = std::mem::take(&mut self.pending);
-            let res = rs
-                .process_partial(Some(&[&tail[..]]), None)
-                .map_err(|e| Error::Decode(e.to_string()))?;
-            self.append(&res[0].clone());
-            // 변환기 내부에 남은 지연분을 밀어낸다.
-            while self.out.len() < expected {
-                let res = rs
-                    .process_partial::<&[f32]>(None, None)
-                    .map_err(|e| Error::Decode(e.to_string()))?;
-                if res[0].is_empty() {
+            // 남은 조각과 변환기 내부의 지연분을 무음으로 채워 밀어낸다.
+            // (rubato의 process_partial은 남은 조각이 비어 있으면 실패하므로 직접 채운다.)
+            let mut chunk = std::mem::take(&mut self.pending);
+            let max_flushes = 4 + rs.output_delay() / (RESAMPLE_CHUNK * SAMPLE_RATE as usize / rate as usize).max(1);
+            for _ in 0..max_flushes {
+                if chunk.is_empty() && self.out.len() >= expected {
                     break;
                 }
+                chunk.resize(RESAMPLE_CHUNK, 0.0);
+                let res = rs
+                    .process(&[&chunk[..]], None)
+                    .map_err(|e| Error::Decode(e.to_string()))?;
                 self.append(&res[0].clone());
+                chunk.clear();
             }
             self.out.truncate(expected);
         }
