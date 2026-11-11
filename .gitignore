@@ -1,0 +1,8 @@
+node_modules/
+dist/
+target/
+models/
+out/
+src-tauri/gen/
+*.part
+.DS_Store

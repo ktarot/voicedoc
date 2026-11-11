@@ -1,0 +1,42 @@
+name: 윈도 설치 파일 빌드
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # whisper.cpp 바인딩 생성에 libclang이 필요하다 (러너에 LLVM이 설치되어 있다).
+      - name: LLVM 경로 설정
+        shell: pwsh
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      - run: npm ci
+
+      - name: 핵심 라이브러리 테스트
+        run: cargo test -p voicedoc-core --release
+
+      - name: 설치 파일 빌드
+        run: npx tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoiceDoc-windows
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error

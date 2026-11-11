@@ -1,0 +1,24 @@
+[package]
+name = "voicedoc"
+version = "0.1.0"
+edition = "2021"
+description = "음성 파일을 문서로 바꾸는 앱"
+
+[lib]
+name = "voicedoc_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+voicedoc-core = { path = "../crates/core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# API 키는 운영체제의 보안 저장소에 둔다 (윈도: 자격 증명 관리자).
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+keyring = { version = "3", features = ["windows-native", "apple-native"] }

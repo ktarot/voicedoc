@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "src-tauri"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+
+# 디버그 빌드에서도 디코딩/인식이 느리지 않도록 의존성은 최적화
+[profile.dev.package."*"]
+opt-level = 3
