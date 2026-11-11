@@ -35,12 +35,15 @@ export function Dialog({
   title,
   children,
   footer,
+  tabs,
   onClose,
   wide,
 }: {
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  /** 제목 아래에 고정되는 탭 줄 */
+  tabs?: ReactNode;
   onClose: () => void;
   wide?: boolean;
 }) {
@@ -53,6 +56,7 @@ export function Dialog({
             ✕
           </button>
         </header>
+        {tabs}
         <div className="dialog-body">{children}</div>
         {footer && <footer className="dialog-footer">{footer}</footer>}
       </div>

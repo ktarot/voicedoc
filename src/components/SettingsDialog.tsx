@@ -3,6 +3,13 @@ import { LANGUAGES } from "../lib/types";
 import type { ModelView, Provider, SettingsView } from "../lib/types";
 import { Dialog, Progress } from "./ui";
 
+type TabId = "stt" | "ai" | "save";
+const TABS: [TabId, string][] = [
+  ["stt", "음성 인식"],
+  ["ai", "온라인 AI"],
+  ["save", "저장"],
+];
+
 function KeyField({
   label,
   saved,
@@ -63,10 +70,26 @@ export function SettingsDialog({
   onPickFolder: () => void;
   onClose: () => void;
 }) {
+  const [tab, setTab] = useState<TabId>("stt");
+  const tabs = (
+    <div className="dialog-tabs" role="tablist">
+      {TABS.map(([id, label]) => (
+        <button
+          key={id}
+          role="tab"
+          aria-selected={tab === id}
+          className={`tab ${tab === id ? "tab-active" : ""}`}
+          onClick={() => setTab(id)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
-    <Dialog title="설정" onClose={onClose} wide>
-      <section className="settings-section">
-        <h3>음성 인식</h3>
+    <Dialog title="설정" onClose={onClose} wide tabs={tabs}>
+      <section className="settings-section" hidden={tab !== "stt"}>
         <div className="field">
           <label htmlFor="stt-mode">인식 방식</label>
           <select id="stt-mode" value={settings.sttMode} onChange={(e) => onPatch({ sttMode: e.target.value as SettingsView["sttMode"] })}>
@@ -153,8 +176,7 @@ export function SettingsDialog({
         <p className="help">인식 힌트에 사람 이름이나 전문 용어를 적어 두면 그 단어를 더 정확히 받아 적습니다.</p>
       </section>
 
-      <section className="settings-section">
-        <h3>온라인 AI (요약 · 회의록 · 번역)</h3>
+      <section className="settings-section" hidden={tab !== "ai"}>
         <div className="field">
           <label htmlFor="provider">사용할 AI</label>
           <select id="provider" value={settings.provider} onChange={(e) => onPatch({ provider: e.target.value as Provider })}>
@@ -183,8 +205,7 @@ export function SettingsDialog({
         </p>
       </section>
 
-      <section className="settings-section">
-        <h3>저장</h3>
+      <section className="settings-section" hidden={tab !== "save"}>
         <div className="field">
           <label>저장 폴더</label>
           <div className="row">

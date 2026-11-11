@@ -525,7 +525,9 @@ select {
 }
 .dialog {
   width: min(440px, 100%);
-  max-height: 100%;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -546,8 +548,21 @@ select {
   font-size: 16px;
 }
 .dialog-body {
+  flex: 1;
+  min-height: 0;
   padding: 18px;
   overflow-y: auto;
+}
+.dialog-header,
+.dialog-footer,
+.dialog-tabs {
+  flex-shrink: 0;
+}
+.dialog-tabs {
+  display: flex;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
 }
 .dialog-footer {
   display: flex;
@@ -557,11 +572,6 @@ select {
   border-top: 1px solid var(--border);
 }
 
-.settings-section + .settings-section {
-  margin-top: 22px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border);
-}
 .settings-section h3 {
   font-size: 15px;
   margin-bottom: 12px;
