@@ -9,6 +9,8 @@ export interface Settings {
   language: string;
   timestamps: boolean;
   prompt: string;
+  /** 그래픽카드가 있으면 인식에 쓴다 */
+  useGpu: boolean;
   provider: Provider;
   claudeModel: string;
   openaiModel: string;
@@ -23,6 +25,8 @@ export interface SettingsView extends Settings {
   hasOpenaiKey: boolean;
   resolvedOutputDir: string;
   audioExtensions: string[];
+  /** 지난 실행에서 그래픽카드 인식 중 앱이 종료되어 CPU 인식으로 바꿨다 */
+  gpuAutoDisabled: boolean;
 }
 
 export interface ModelView {

@@ -18,6 +18,7 @@ const USAGE: &str = "\
   --download              모델이 없으면 내려받는다
   --lang <코드>           언어 (ko, en …). 생략하면 자동 감지
   --prompt <문장>         고유명사 등 인식 힌트
+  --cpu                   그래픽카드가 있어도 CPU로만 인식
   --cloud                 로컬 대신 OpenAI 클라우드 인식 (OPENAI_API_KEY 필요)
   --timestamps            문단마다 시각 표시
   --out <폴더>            저장 폴더. 기본값은 입력 파일과 같은 폴더
@@ -36,6 +37,7 @@ struct Args {
     download: bool,
     lang: Option<String>,
     prompt: Option<String>,
+    cpu: bool,
     cloud: bool,
     timestamps: bool,
     out: Option<PathBuf>,
@@ -54,6 +56,7 @@ fn parse_args() -> std::result::Result<Args, String> {
         download: false,
         lang: None,
         prompt: None,
+        cpu: false,
         cloud: false,
         timestamps: false,
         out: None,
@@ -71,6 +74,7 @@ fn parse_args() -> std::result::Result<Args, String> {
             "--download" => a.download = true,
             "--lang" => a.lang = Some(value("--lang")?),
             "--prompt" => a.prompt = Some(value("--prompt")?),
+            "--cpu" => a.cpu = true,
             "--cloud" => a.cloud = true,
             "--timestamps" => a.timestamps = true,
             "--out" => a.out = Some(value("--out")?.into()),
@@ -136,7 +140,7 @@ fn resolve_model(a: &Args, cancel: &Cancel) -> Result<PathBuf> {
 }
 
 fn transcribe(a: &Args, samples: &[f32], cancel: &Cancel) -> Result<Transcript> {
-    let opts = SttOptions { language: a.lang.clone(), prompt: a.prompt.clone() };
+    let opts = SttOptions { language: a.lang.clone(), prompt: a.prompt.clone(), cpu_only: a.cpu };
     if a.cloud {
         let cfg = cloud::CloudSttConfig {
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
@@ -149,8 +153,14 @@ fn transcribe(a: &Args, samples: &[f32], cancel: &Cancel) -> Result<Transcript> 
     #[cfg(feature = "local-stt")]
     {
         let model_path = resolve_model(a, cancel)?;
+        let device = match voicedoc_core::stt::local::accelerator() {
+            Some(gpu) if !a.cpu => format!("그래픽카드 ({gpu})"),
+            _ => "CPU".to_string(),
+        };
+        eprintln!("인식 장치: {device}");
+        let started = std::time::Instant::now();
         let mut last = -10;
-        voicedoc_core::stt::local::transcribe(
+        let result = voicedoc_core::stt::local::transcribe(
             &model_path,
             samples,
             &opts,
@@ -161,7 +171,9 @@ fn transcribe(a: &Args, samples: &[f32], cancel: &Cancel) -> Result<Transcript> 
                 }
             },
             cancel,
-        )
+        );
+        eprintln!("인식 시간: {:.1}초", started.elapsed().as_secs_f64());
+        result
     }
     #[cfg(not(feature = "local-stt"))]
     {

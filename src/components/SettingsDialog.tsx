@@ -48,6 +48,7 @@ function KeyField({
 
 export function SettingsDialog({
   settings,
+  gpu,
   models,
   downloads,
   onPatch,
@@ -59,6 +60,8 @@ export function SettingsDialog({
   onClose,
 }: {
   settings: SettingsView;
+  /** 인식에 쓸 그래픽카드 이름. undefined = 확인 중, null = 없음 */
+  gpu: string | null | undefined;
   models: ModelView[];
   /** 내려받는 중인 모델의 진행률(%) */
   downloads: Record<string, number>;
@@ -150,6 +153,25 @@ export function SettingsDialog({
             })}
           </ul>
           <p className="help">모델은 한 번만 내려받으면 되고, 이후에는 인터넷 없이 인식합니다.</p>
+        </div>
+
+        <div className="field">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.useGpu}
+              disabled={!gpu}
+              onChange={(e) => onPatch({ useGpu: e.target.checked })}
+            />
+            그래픽카드로 빠르게 인식
+          </label>
+          <p className="help">
+            {gpu === undefined
+              ? "그래픽카드를 확인하고 있습니다…"
+              : gpu
+                ? `${gpu} 사용. 인식이 실패하거나 화면이 불안정하면 끄고 CPU로 인식하세요.`
+                : "사용할 수 있는 그래픽카드를 찾지 못해 CPU로 인식합니다. 그래픽 드라이버를 최신으로 설치하면 쓸 수 있을 수 있습니다."}
+          </p>
         </div>
 
         <div className="field-grid">

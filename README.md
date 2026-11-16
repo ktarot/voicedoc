@@ -3,6 +3,7 @@
 m4a · mp3 · mp4 · wav 등 음성(영상) 파일을 글로 바꿔 **docx · pdf · md · txt** 로 저장하는 앱입니다.
 
 - **PC 단독 동작**: 음성 인식은 이 PC 안에서 처리합니다 (whisper.cpp). 인식 모델을 처음 한 번 내려받은 뒤에는 인터넷이 필요 없습니다.
+- **그래픽카드 가속**: NVIDIA·AMD·Intel 그래픽카드가 있으면 Vulkan으로 인식합니다 (CPU보다 수 배~수십 배 빠름). 없거나 문제가 생기면 CPU로 인식하며, 설정에서 끌 수 있습니다.
 - **온라인 AI (선택)**: 요약, 회의록 정리, 번역, 클라우드 고정밀 인식. 본인의 API 키를 설정에 넣었을 때만 동작합니다.
 - **윈도 우선, 안드로이드 확장 대비**: Tauri 2 + Rust + React. 외부 프로그램(ffmpeg 등) 없이 모든 처리가 앱에 들어 있습니다.
 
@@ -29,7 +30,9 @@ m4a · mp3 · mp4 · wav 등 음성(영상) 파일을 글로 바꿔 **docx · pd
 
 ## 개발
 
-필요한 것: Node.js 20 이상, Rust(stable), CMake, LLVM(clang). 윈도에서는 Visual Studio C++ 빌드 도구와 WebView2(윈도 10/11에 기본 포함)도 필요합니다.
+필요한 것: Node.js 20 이상, Rust(stable), CMake, LLVM(clang). 윈도에서는 Visual Studio C++ 빌드 도구, WebView2(윈도 10/11에 기본 포함), 그래픽카드 가속용 [Vulkan SDK](https://vulkan.lunarg.com/)(`VULKAN_SDK` 환경 변수)도 필요합니다.
+
+whisper.cpp 바인딩은 작은 수정을 더한 사본을 씁니다 (`vendor/README.md`).
 
 ```bash
 npm install

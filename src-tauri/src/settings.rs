@@ -23,6 +23,8 @@ pub struct Settings {
     pub language: String,
     pub timestamps: bool,
     pub prompt: String,
+    /// 그래픽카드가 있으면 인식에 쓴다.
+    pub use_gpu: bool,
     pub provider: Provider,
     pub claude_model: String,
     pub openai_model: String,
@@ -41,6 +43,7 @@ impl Default for Settings {
             language: "ko".into(),
             timestamps: false,
             prompt: String::new(),
+            use_gpu: true,
             provider: Provider::Claude,
             claude_model: Provider::Claude.default_model().into(),
             openai_model: Provider::OpenAi.default_model().into(),

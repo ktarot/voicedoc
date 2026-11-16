@@ -10,4 +10,7 @@ pub struct SttOptions {
     pub language: Option<String>,
     /// 고유명사·전문용어 등 인식에 참고할 힌트 문장.
     pub prompt: Option<String>,
+    /// 그래픽카드가 있어도 CPU로만 인식한다 (문제 해결용).
+    #[serde(default)]
+    pub cpu_only: bool,
 }

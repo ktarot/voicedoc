@@ -26,6 +26,8 @@ export interface Backend {
   downloadModel(id: string): Promise<void>;
   deleteModel(id: string): Promise<void>;
   transcribe(jobId: string, path: string): Promise<TranscribeResult>;
+  /** 인식에 쓸 수 있는 그래픽카드 이름. 없으면 null */
+  acceleratorInfo(): Promise<string | null>;
   formatTranscript(transcript: Transcript, timestamps: boolean): Promise<string>;
   cancelJob(jobId: string): Promise<void>;
   runAi(jobId: string, task: AiTask, text: string): Promise<AiOutput>;
@@ -56,6 +58,7 @@ async function createTauriBackend(): Promise<Backend> {
     downloadModel: (id) => invoke("download_model", { id }),
     deleteModel: (id) => invoke("delete_model", { id }),
     transcribe: (jobId, path) => invoke("transcribe", { jobId, path }),
+    acceleratorInfo: () => invoke("accelerator_info"),
     formatTranscript: (transcript, timestamps) => invoke("format_transcript", { transcript, timestamps }),
     cancelJob: (jobId) => invoke("cancel_job", { jobId }),
     runAi: (jobId, task, text) => invoke("run_ai", { jobId, task, text }),

@@ -176,7 +176,7 @@ fn cloud_transcription_offsets_chunks() {
         model: cloud::DEFAULT_MODEL.into(),
         base_url: base,
     };
-    let opts = SttOptions { language: Some("ko".into()), prompt: None };
+    let opts = SttOptions { language: Some("ko".into()), prompt: None, ..Default::default() };
     let mut progress = Vec::new();
     let t = cloud::transcribe(&cfg, &samples, &opts, |p| progress.push(p), &Cancel::new()).unwrap();
 
