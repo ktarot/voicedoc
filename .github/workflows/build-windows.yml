@@ -27,6 +27,13 @@ jobs:
         shell: pwsh
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
+      # 그래픽카드 가속(Vulkan) 빌드에 필요한 헤더·셰이더 컴파일러·링크 라이브러리.
+      # 앱 실행에는 필요 없다 (vulkan-1.dll은 사용자 PC의 그래픽 드라이버가 설치한다).
+      - name: Vulkan SDK 설치
+        uses: jakoch/install-vulkan-sdk-action@v1.8.1
+        with:
+          cache: true
+
       - run: npm ci
 
       - name: 핵심 라이브러리 테스트

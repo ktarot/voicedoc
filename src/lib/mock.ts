@@ -61,6 +61,7 @@ export function createMockBackend(): Backend {
     language: "ko",
     timestamps: false,
     prompt: "",
+    useGpu: true,
     provider: "claude",
     claudeModel: "claude-opus-5-5",
     openaiModel: "gpt-5",
@@ -90,6 +91,7 @@ export function createMockBackend(): Backend {
       hasOpenaiKey: keys.openai,
       resolvedOutputDir: settings.outputDir || "C:\\Users\\me\\Documents\\VoiceDoc",
       audioExtensions: ["m4a", "mp3", "mp4", "wav"],
+      gpuAutoDisabled: false,
     }),
     saveSettings: async (s) => void (settings = s),
     setApiKey: async (provider, key) => void (keys[provider] = key.trim() !== ""),
@@ -116,6 +118,7 @@ export function createMockBackend(): Backend {
       }
       return { transcript: SAMPLE, text: toText(SAMPLE, settings.timestamps) };
     },
+    acceleratorInfo: async () => "NVIDIA GeForce RTX 3060",
     formatTranscript: async (t, timestamps) => toText(t, timestamps),
     cancelJob: async (jobId) => void cancelled.add(jobId),
     async runAi(jobId, task) {

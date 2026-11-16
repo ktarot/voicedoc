@@ -7,11 +7,13 @@ description = "VoiceDoc 핵심 라이브러리: 오디오 디코딩, 음성 인�
 [features]
 default = ["local-stt"]
 local-stt = ["dep:whisper-rs", "dep:memmap2"]
+# 그래픽카드 가속 (NVIDIA·AMD·Intel 공통). 빌드에 Vulkan SDK가 필요하다.
+vulkan = ["local-stt", "whisper-rs/vulkan", "whisper-rs/raw-api"]
 
 [dependencies]
 symphonia = { version = "0.5.4", default-features = false, features = ["mp3", "aac", "isomp4", "wav", "flac", "ogg", "vorbis", "pcm", "alac", "adpcm", "mkv"] }
 rubato = "0.16"
-whisper-rs = { version = "0.14", optional = true }
+whisper-rs = { version = "0.16", optional = true }
 memmap2 = { version = "0.9", optional = true }
 docx-rs = "0.4"
 printpdf = "0.7"

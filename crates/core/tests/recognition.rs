@@ -46,7 +46,7 @@ fn cancel_stops_recognition_early() {
         stopper.cancel();
     });
     let started = Instant::now();
-    let opts = SttOptions { language: Some("en".into()), prompt: None };
+    let opts = SttOptions { language: Some("en".into()), prompt: None, ..Default::default() };
     let err = local::transcribe(&model, &long, &opts, |_| {}, &cancel).unwrap_err();
     assert!(matches!(err, Error::Cancelled), "예상과 다른 결과: {err}");
     assert!(started.elapsed() < Duration::from_secs(30), "취소가 너무 늦습니다: {:?}", started.elapsed());

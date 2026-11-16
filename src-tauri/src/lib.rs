@@ -79,13 +79,27 @@ struct SettingsView {
     /// 실제로 저장될 폴더 (설정이 비어 있을 때의 기본값 포함).
     resolved_output_dir: String,
     audio_extensions: &'static [&'static str],
+    /// 지난 실행에서 그래픽카드 인식 중 앱이 종료되어 CPU 인식으로 바꿨다.
+    gpu_auto_disabled: bool,
 }
+
+/// 그래픽카드 인식 중임을 표시하는 파일. 인식이 끝나면 지운다.
+/// 다음 실행 때 남아 있으면 그래픽 드라이버 문제로 앱이 종료된 것으로 본다.
+const GPU_RUN_MARKER: &str = "gpu-run.marker";
 
 #[tauri::command]
 fn get_settings(app: AppHandle) -> CmdResult<SettingsView> {
     let dir = config_dir(&app)?;
-    let settings = settings::load(&dir);
+    let mut settings = settings::load(&dir);
+    let marker = dir.join(GPU_RUN_MARKER);
+    let gpu_auto_disabled = marker.exists();
+    if gpu_auto_disabled {
+        settings.use_gpu = false;
+        settings::save(&dir, &settings)?;
+        let _ = std::fs::remove_file(&marker);
+    }
     Ok(SettingsView {
+        gpu_auto_disabled,
         has_claude_key: !secrets::get(&dir, Provider::Claude).is_empty(),
         has_openai_key: !secrets::get(&dir, Provider::OpenAi).is_empty(),
         resolved_output_dir: output_dir(&app, &settings)?.to_string_lossy().into_owned(),
@@ -236,6 +250,7 @@ async fn transcribe(
         let opts = SttOptions {
             language: Some(settings.language.trim().to_string()).filter(|l| !l.is_empty()),
             prompt: Some(settings.prompt.clone()).filter(|p| !p.trim().is_empty()),
+            cpu_only: !settings.use_gpu,
         };
         emit("transcribe", 0);
         let transcript = match settings.stt_mode {
@@ -252,13 +267,21 @@ async fn transcribe(
                 let info = model::find(&settings.model_id)
                     .ok_or_else(|| Error::Model("선택한 모델을 찾을 수 없습니다".into()))?;
                 let e = emit.clone();
-                voicedoc_core::stt::local::transcribe(
+                let marker = (!opts.cpu_only).then(|| dir.join(GPU_RUN_MARKER));
+                if let Some(m) = &marker {
+                    let _ = std::fs::write(m, b"");
+                }
+                let result = voicedoc_core::stt::local::transcribe(
                     &model::path_in(&models, info),
                     &samples,
                     &opts,
                     move |p| e("transcribe", p),
                     &cancel,
-                )?
+                );
+                if let Some(m) = &marker {
+                    let _ = std::fs::remove_file(m);
+                }
+                result?
             }
         };
         let text = transcript.to_text(settings.timestamps);
@@ -267,6 +290,12 @@ async fn transcribe(
     .await;
     jobs.finish(&job_id);
     result
+}
+
+/// 인식에 쓸 수 있는 그래픽카드 이름. 없으면 None (CPU로 인식).
+#[tauri::command]
+async fn accelerator_info() -> CmdResult<Option<String>> {
+    blocking(|| Ok(voicedoc_core::stt::local::accelerator())).await
 }
 
 /// 시각 표시 여부를 바꿔 본문을 다시 만든다.
@@ -373,6 +402,7 @@ pub fn run() {
             download_model,
             delete_model,
             transcribe,
+            accelerator_info,
             format_transcript,
             cancel_job,
             run_ai,

@@ -42,6 +42,8 @@ export default function App() {
   const [confirmTimestamps, setConfirmTimestamps] = useState<boolean | null>(null);
   const [toast, setToast] = useState<ToastData | null>(null);
   const [dropHover, setDropHover] = useState(false);
+  /** 인식에 쓸 그래픽카드 이름. undefined = 확인 중, null = 없음 */
+  const [gpu, setGpu] = useState<string | null | undefined>(undefined);
 
   // 대기열 처리 루프가 항상 최신 목록을 보도록 ref와 상태를 함께 갱신한다.
   const itemsRef = useRef<Item[]>([]);
@@ -67,7 +69,15 @@ export default function App() {
 
   const reloadSettings = useCallback(async () => {
     const b = await api();
-    setSettings(await b.getSettings());
+    const s = await b.getSettings();
+    setSettings(s);
+    if (s.gpuAutoDisabled) {
+      setToast({
+        kind: "error",
+        message:
+          "지난번 그래픽카드로 인식하던 중 앱이 종료되어, 이제부터 CPU로 인식합니다. 그래픽 드라이버를 업데이트한 뒤 설정에서 다시 켤 수 있습니다.",
+      });
+    }
   }, []);
 
   const reloadModels = useCallback(async () => {
@@ -103,6 +113,7 @@ export default function App() {
     (async () => {
       const b = await api();
       await Promise.all([reloadSettings(), reloadModels()]);
+      b.acceleratorInfo().then(setGpu, () => setGpu(null));
       const subs = await Promise.all([
         b.onJobProgress((p) =>
           updateItem(p.jobId, (it) =>
@@ -340,7 +351,10 @@ export default function App() {
           <div className="sidebar-head">
             <h2>파일</h2>
             <span className="mode">
-              {settings.sttMode === "local" ? `이 PC에서 인식 · ${model?.name ?? settings.modelId}` : "클라우드 인식"}
+              {settings.sttMode === "local"
+                ? `이 PC에서 인식 · ${model?.name ?? settings.modelId}` +
+                  (gpu === undefined ? "" : settings.useGpu && gpu ? " · 그래픽카드 가속" : " · CPU")
+                : "클라우드 인식"}
             </span>
           </div>
 
@@ -456,6 +470,7 @@ export default function App() {
       {showSettings && (
         <SettingsDialog
           settings={settings}
+          gpu={gpu}
           models={models}
           downloads={downloads}
           onPatch={patchSettings}

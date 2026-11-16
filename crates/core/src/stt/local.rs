@@ -3,9 +3,9 @@
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Once;
+use std::sync::{Mutex, Once};
 
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
 use super::SttOptions;
 use crate::audio;
@@ -13,9 +13,57 @@ use crate::{Cancel, Error, Result, Segment, Transcript};
 
 static LOG_HOOK: Once = Once::new();
 
+/// 한 번에 하나만 인식한다. 같은 그래픽카드에서 두 인식을 동시에 돌리면 안정적이지 않다.
+static RUN: Mutex<()> = Mutex::new(());
+
 fn default_threads() -> i32 {
     let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     n.clamp(1, 8) as i32
+}
+
+/// 그래픽카드 가속을 쓸 수 있으면 그 장치 이름을 돌려준다. 없거나 CPU 전용 빌드면 None.
+pub fn accelerator() -> Option<String> {
+    #[cfg(feature = "vulkan")]
+    {
+        use whisper_rs::whisper_rs_sys as sys;
+        prepare_vulkan();
+        // ggml 장치 목록은 Vulkan 오류를 내부에서 처리한다. whisper.cpp도 이 목록의 첫 GPU를 쓴다.
+        // 안전성: 장치 포인터와 설명 문자열은 ggml이 프로그램이 끝날 때까지 보관한다.
+        unsafe {
+            (0..sys::ggml_backend_dev_count())
+                .map(|i| sys::ggml_backend_dev_get(i))
+                .find(|&d| {
+                    !d.is_null()
+                        && sys::ggml_backend_dev_type(d) == sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_GPU
+                })
+                .map(|d| std::ffi::CStr::from_ptr(sys::ggml_backend_dev_description(d)).to_string_lossy().into_owned())
+        }
+    }
+    #[cfg(not(feature = "vulkan"))]
+    {
+        None
+    }
+}
+
+/// 윈도에서 vulkan-1.dll(그래픽 드라이버가 설치)이 없으면 인식 엔진이 Vulkan을 건너뛰게 한다.
+/// 앱은 이 DLL을 지연 로드하므로, 확인 없이 쓰면 드라이버 없는 PC에서 종료된다.
+#[cfg(feature = "vulkan")]
+fn prepare_vulkan() {
+    static CHECK: Once = Once::new();
+    CHECK.call_once(|| {
+        #[cfg(windows)]
+        {
+            #[link(name = "kernel32")]
+            extern "system" {
+                fn LoadLibraryW(name: *const u16) -> *mut c_void;
+            }
+            let name: Vec<u16> = "vulkan-1.dll".encode_utf16().chain(Some(0)).collect();
+            // 안전성: 0으로 끝나는 UTF-16 문자열을 넘긴다. 불러온 DLL은 프로그램이 끝날 때까지 둔다.
+            if unsafe { LoadLibraryW(name.as_ptr()) }.is_null() {
+                std::env::set_var("VOICEDOC_NO_VULKAN", "1");
+            }
+        }
+    });
 }
 
 unsafe extern "C" fn abort_trampoline(user_data: *mut c_void) -> bool {
@@ -33,6 +81,9 @@ pub fn transcribe(
     // whisper.cpp가 표준 오류로 쏟아내는 기록을 막는다.
     LOG_HOOK.call_once(whisper_rs::install_logging_hooks);
 
+    let _running = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    cancel.check()?;
+
     if !model_path.is_file() {
         return Err(Error::Model("인식 모델 파일이 없습니다. 먼저 모델을 내려받아 주세요".into()));
     }
@@ -41,10 +92,24 @@ pub fn transcribe(
     let file = std::fs::File::open(model_path)?;
     // 안전성: 모델 파일은 앱 전용 폴더에 있고 불러오는 동안 수정하지 않는다.
     let map = unsafe { memmap2::Mmap::map(&file) }?;
-    let ctx = WhisperContext::new_from_buffer_with_params(&map, WhisperContextParameters::default())
-        .map_err(|e| Error::Model(format!("모델을 불러오지 못했습니다 (파일이 손상되었을 수 있습니다): {e}")))?;
+    #[cfg(feature = "vulkan")]
+    prepare_vulkan();
+    let load = |use_gpu: bool| -> Result<WhisperState> {
+        let mut params = WhisperContextParameters::default();
+        params.use_gpu = use_gpu;
+        // whisper.cpp 1.8의 기본값. 그래픽카드에서 더 빠르고 메모리를 덜 쓴다 (whisper-rs는 기본으로 끈다).
+        params.flash_attn = use_gpu;
+        let ctx = WhisperContext::new_from_buffer_with_params(&map, params)
+            .map_err(|e| Error::Model(format!("모델을 불러오지 못했습니다 (파일이 손상되었을 수 있습니다): {e}")))?;
+        ctx.create_state().map_err(|e| Error::Stt(e.to_string()))
+    };
+    let want_gpu = cfg!(feature = "vulkan") && !opts.cpu_only;
+    // 그래픽카드에 올리지 못하면(메모리 부족, 드라이버 문제 등) CPU로 다시 시도한다.
+    let mut state = match load(want_gpu) {
+        Err(_) if want_gpu => load(false)?,
+        other => other?,
+    };
     drop(map);
-    let mut state = ctx.create_state().map_err(|e| Error::Stt(e.to_string()))?;
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_n_threads(default_threads());
@@ -71,15 +136,13 @@ pub fn transcribe(
     cancel.check()?;
     run.map_err(|e| Error::Stt(e.to_string()))?;
 
-    let n = state.full_n_segments().map_err(|e| Error::Stt(e.to_string()))?;
-    let mut segments = Vec::with_capacity(n as usize);
+    let n = state.full_n_segments();
+    let mut segments = Vec::with_capacity(n.max(0) as usize);
     for i in 0..n {
-        let text = state
-            .full_get_segment_text_lossy(i)
-            .map_err(|e| Error::Stt(e.to_string()))?;
+        let Some(seg) = state.get_segment(i) else { continue };
+        let text = seg.to_str_lossy().map_err(|e| Error::Stt(e.to_string()))?;
         // whisper 시각 단위는 10ms
-        let t0 = state.full_get_segment_t0(i).map_err(|e| Error::Stt(e.to_string()))?;
-        let t1 = state.full_get_segment_t1(i).map_err(|e| Error::Stt(e.to_string()))?;
+        let (t0, t1) = (seg.start_timestamp(), seg.end_timestamp());
         let text = text.trim();
         if text.is_empty() {
             continue;
@@ -92,11 +155,7 @@ pub fn transcribe(
     }
     let language = match opts.language.clone() {
         Some(l) => Some(l),
-        None => state
-            .full_lang_id_from_state()
-            .ok()
-            .and_then(whisper_rs::get_lang_str)
-            .map(str::to_string),
+        None => whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_string),
     };
     Ok(Transcript { language, duration_ms: audio::duration_ms(samples.len()), segments })
 }
