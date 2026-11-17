@@ -14,6 +14,9 @@ pub struct Transcript {
     pub language: Option<String>,
     pub duration_ms: u64,
     pub segments: Vec<Segment>,
+    /// 말소리가 감지됐는데도 받아 적은 글이 없는 구간 (시작·끝 ms). 사용자에게 알려 직접 확인하게 한다.
+    #[serde(default)]
+    pub unrecognized: Vec<(u64, u64)>,
 }
 
 /// 이보다 긴 침묵이 있으면 문단을 나눈다.
@@ -90,6 +93,7 @@ mod tests {
     #[test]
     fn groups_by_silence() {
         let t = Transcript {
+            unrecognized: Vec::new(),
             language: None,
             duration_ms: 20_000,
             segments: vec![
@@ -113,6 +117,7 @@ mod tests {
     fn splits_long_paragraph_at_sentence_end() {
         let long = "가".repeat(450) + ".";
         let t = Transcript {
+            unrecognized: Vec::new(),
             language: None,
             duration_ms: 0,
             segments: vec![seg(0, 1000, &long), seg(1000, 2000, "다음 문장.")],

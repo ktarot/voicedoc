@@ -76,7 +76,7 @@ fn skips_silence_and_keeps_original_times() {
     let audio: Vec<f32> = [&silence[..], &clip, &silence, &clip, &silence].concat();
     let opts = SttOptions { language: Some("en".into()), ..Default::default() };
 
-    let t = stt::transcribe_speech(&audio, &opts, &cancel, &|_| {}, |speech| {
+    let t = stt::transcribe_speech(&audio, &opts, &cancel, &|_| {}, |speech, _| {
         // 엔진에는 말소리 구간만 넘어가야 한다 (전체 142초 중 약 22초).
         assert!(speech.len() < 16_000 * 30, "엔진에 넘어간 길이: {}초", speech.len() / 16_000);
         local::transcribe(&model, speech, &opts, |_| {}, &cancel)
@@ -99,7 +99,7 @@ fn skips_silence_and_keeps_original_times() {
 fn silence_only_gives_no_text() {
     let cancel = Cancel::new();
     let audio = vec![0.0f32; 16_000 * 60];
-    let t = stt::transcribe_speech(&audio, &SttOptions::default(), &cancel, &|_| {}, |_| {
+    let t = stt::transcribe_speech(&audio, &SttOptions::default(), &cancel, &|_| {}, |_, _| {
         panic!("말소리가 없으면 엔진을 부르지 않는다")
     })
     .unwrap();
@@ -114,11 +114,48 @@ fn keep_silence_passes_audio_through() {
     let audio = vec![0.0f32; 16_000 * 5];
     let opts = SttOptions { keep_silence: true, ..Default::default() };
     let mut seen = 0;
-    let t = stt::transcribe_speech(&audio, &opts, &cancel, &|_| {}, |speech| {
+    let t = stt::transcribe_speech(&audio, &opts, &cancel, &|_| {}, |speech, _| {
         seen = speech.len();
         Ok(voicedoc_core::Transcript::default())
     })
     .unwrap();
     assert_eq!(seen, audio.len());
     assert_eq!(t.duration_ms, 5_000);
+}
+
+/// 긴 음성은 약 10분씩 나뉘어 엔진에 넘어가고, 각 묶음의 시각은 원래 위치로 돌아와야 한다.
+/// 한 묶음이 헛돌아도 다음 묶음은 영향을 받지 않는다.
+#[test]
+fn long_audio_goes_to_the_engine_in_blocks() {
+    let cancel = Cancel::new();
+    let audio = vec![0.0f32; 16_000 * 60 * 25];
+    let opts = SttOptions { keep_silence: true, language: Some("ko".into()), ..Default::default() };
+    let mut spans = Vec::new();
+    let t = stt::transcribe_speech(&audio, &opts, &cancel, &|_| {}, |block, span| {
+        assert!(block.len() <= 16_000 * 600, "묶음 길이: {}초", block.len() / 16_000);
+        spans.push(span);
+        let n = spans.len();
+        // 둘째 묶음은 같은 말만 되풀이하는 상황을 흉내 낸다.
+        let text = ["첫째 묶음에서 받아 적은 문장입니다.", "같은 말만 되풀이합니다.", "셋째 묶음에서 받아 적은 문장입니다."][n - 1];
+        let segments = (0..3)
+            .map(|i| voicedoc_core::Segment { start_ms: 1000 + i * 2000, end_ms: 3000 + i * 2000, text: text.into() })
+            .collect();
+        Ok(voicedoc_core::Transcript { segments, ..Default::default() })
+    })
+    .unwrap();
+
+    assert_eq!(spans.len(), 3);
+    assert_eq!(spans[0].start, 0.0);
+    assert_eq!(spans[2].end, 1.0);
+    assert!(spans.windows(2).all(|w| w[0].end == w[1].start));
+
+    // 묶음마다 되풀이는 하나로 줄고, 셋째 묶음의 글은 그대로 남는다.
+    let starts: Vec<u64> = t.segments.iter().map(|s| s.start_ms / 1000).collect();
+    assert_eq!(t.segments.len(), 3, "{:?}", t.segments);
+    assert_eq!(starts[0], 1);
+    // 묶음 경계는 10분 근처의 가장 조용한 곳(최대 15초 앞)에 놓인다.
+    assert!((586..=601).contains(&starts[1]), "둘째 묶음 시각: {}", starts[1]);
+    assert!((1171..=1201).contains(&starts[2]), "셋째 묶음 시각: {}", starts[2]);
+    assert!(t.segments[2].text.starts_with("셋째 묶음"));
+    assert_eq!(t.duration_ms, 25 * 60_000);
 }

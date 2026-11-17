@@ -49,6 +49,8 @@ export interface Transcript {
   language: string | null;
   duration_ms: number;
   segments: Segment[];
+  /** 말소리가 감지됐지만 받아 적지 못한 구간 [시작 ms, 끝 ms] */
+  unrecognized?: [number, number][];
 }
 
 export interface TranscribeResult {

@@ -66,6 +66,49 @@ pub fn regions_from_probs(probs: &[f32], total_samples: usize) -> Vec<(usize, us
     out
 }
 
+/// 한 번에 인식 엔진에 넘기는 말소리 분량의 목표 (10분).
+const BLOCK_TARGET: usize = RATE * 600;
+/// 끊김 없이 이어지는 말이 이보다 길면 중간에서 나눈다 (15분).
+const BLOCK_MAX: usize = RATE * 900;
+/// 긴 말을 나눌 때 목표 지점 앞뒤로 살펴보는 범위 (30초).
+const SPLIT_SEARCH: usize = RATE * 30;
+
+/// 말소리 구간들을 인식 엔진에 넘길 묶음(약 10분씩)으로 나눈다.
+///
+/// 긴 음성을 통째로 넘기면 엔진이 한 번 헛돌기 시작했을 때 끝까지 같은 말만 되풀이할 수 있고
+/// 메모리도 많이 쓴다. 묶음마다 새로 시작하면 문제가 생겨도 그 묶음에서 끝난다.
+/// 쉬지 않고 이어지는 긴 말은 말소리 확률이 가장 낮은 지점(숨 고르기)에서 나눈다.
+pub fn blocks(regions: &[(usize, usize)], probs: &[f32]) -> Vec<Vec<(usize, usize)>> {
+    let mut pieces: Vec<(usize, usize)> = Vec::with_capacity(regions.len());
+    for &(mut start, end) in regions {
+        while end - start > BLOCK_MAX {
+            let target = start + BLOCK_TARGET;
+            let from = (target - SPLIT_SEARCH) / FRAME;
+            let to = ((target + SPLIT_SEARCH) / FRAME).min(probs.len());
+            let cut = (from..to)
+                .min_by(|&a, &b| probs[a].total_cmp(&probs[b]))
+                .map(|i| i * FRAME + FRAME / 2)
+                .unwrap_or(target);
+            pieces.push((start, cut));
+            start = cut;
+        }
+        pieces.push((start, end));
+    }
+
+    let mut out: Vec<Vec<(usize, usize)>> = Vec::new();
+    let mut len = 0;
+    for piece in pieces {
+        let piece_len = piece.1 - piece.0;
+        if out.is_empty() || len + piece_len > BLOCK_TARGET && len > 0 {
+            out.push(Vec::new());
+            len = 0;
+        }
+        out.last_mut().expect("방금 넣었다").push(piece);
+        len += piece_len;
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Piece {
     /// 이어 붙인 음성에서의 시작 위치
@@ -309,6 +352,36 @@ mod tests {
         assert_eq!(r.len(), 1, "{r:?}");
         assert!(regions_from_probs(&probs(&[(30.0, 0.1)]), 30 * RATE).is_empty());
         assert!(regions_from_probs(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn groups_regions_into_blocks() {
+        let secs = |a: usize, b: usize| (a * RATE, b * RATE);
+        // 4분짜리 말 5개 → 10분을 넘지 않게 2개씩
+        let regions: Vec<_> = (0..5).map(|i| secs(i * 300, i * 300 + 240)).collect();
+        let b = blocks(&regions, &[]);
+        assert_eq!(b.iter().map(Vec::len).collect::<Vec<_>>(), vec![2, 2, 1]);
+        assert_eq!(b.concat(), regions);
+        assert!(blocks(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn splits_long_speech_at_the_quietest_point() {
+        // 40분 동안 쉬지 않고 이어지는 말. 9분 50초 지점에만 짧은 숨 고르기가 있다.
+        let total = RATE * 2400;
+        let mut p = vec![0.95f32; total / FRAME];
+        let breath = RATE * 590 / FRAME;
+        p[breath] = 0.4;
+        let b = blocks(&[(0, total)], &p);
+        assert_eq!(b.len(), 4, "{b:?}");
+        // 첫 묶음은 숨 고르기에서 끊긴다
+        assert_eq!(b[0][0].1 / FRAME, breath);
+        // 빠진 곳도 겹친 곳도 없다
+        let flat = b.concat();
+        assert_eq!(flat.first().unwrap().0, 0);
+        assert_eq!(flat.last().unwrap().1, total);
+        assert!(flat.windows(2).all(|w| w[0].1 == w[1].0));
+        assert!(flat.iter().all(|(s, e)| e - s <= BLOCK_MAX));
     }
 
     #[test]

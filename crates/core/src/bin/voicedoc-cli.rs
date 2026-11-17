@@ -156,8 +156,13 @@ fn transcribe(a: &Args, samples: &[f32], cancel: &Cancel) -> Result<Transcript> 
                 eprintln!("말소리 구간 찾기: {:.1}초", started.elapsed().as_secs_f64());
             }
         },
-        |audio| {
-            eprintln!("  인식할 말소리 {:.0}초", audio.len() as f32 / audio::SAMPLE_RATE as f32);
+        |audio, span| {
+            eprintln!(
+                "  묶음 {:.0}초 (전체의 {}~{}%)",
+                audio.len() as f32 / audio::SAMPLE_RATE as f32,
+                span.overall(0),
+                span.overall(100)
+            );
             engine(a, audio, &opts, cancel)
         },
     )
@@ -230,6 +235,13 @@ fn run(a: &Args) -> Result<()> {
     );
     if transcript.segments.is_empty() {
         return Err(Error::Stt("이 파일에서 말소리를 찾지 못했습니다".into()));
+    }
+    for (start, end) in &transcript.unrecognized {
+        eprintln!(
+            "주의: {}~{} 구간은 말소리가 있지만 받아 적지 못했습니다",
+            voicedoc_core::transcript::format_timestamp(*start),
+            voicedoc_core::transcript::format_timestamp(*end)
+        );
     }
     let body = transcript.to_text(a.timestamps);
     println!("{body}");

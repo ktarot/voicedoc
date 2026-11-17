@@ -257,16 +257,16 @@ async fn transcribe(
         emit("scan", 0);
         let scan_emit = emit.clone();
         let scan_progress = move |p: i32| scan_emit("scan", p);
-        let transcript = voicedoc_core::stt::transcribe_speech(&samples, &opts, &cancel, &scan_progress, |audio| Ok(match settings.stt_mode {
+        let transcript = voicedoc_core::stt::transcribe_speech(&samples, &opts, &cancel, &scan_progress, |audio, span| Ok(match settings.stt_mode {
             SttMode::Cloud => {
                 let cfg = cloud::CloudSttConfig {
-                    api_key: openai_key,
+                    api_key: openai_key.clone(),
                     model: settings.cloud_stt_model.clone(),
                     base_url: cloud::DEFAULT_BASE_URL.into(),
                 };
                 let e = emit.clone();
-                e("transcribe", 0);
-                cloud::transcribe(&cfg, audio, &opts, move |p| e("transcribe", p), &cancel)?
+                e("transcribe", span.overall(0));
+                cloud::transcribe(&cfg, audio, &opts, move |p| e("transcribe", span.overall(p)), &cancel)?
             }
             SttMode::Local => {
                 let info = model::find(&settings.model_id)
@@ -277,12 +277,14 @@ async fn transcribe(
                     let _ = std::fs::write(m, b"");
                 }
                 // 모델을 처음 올릴 때는 몇 초에서 수십 초가 걸린다. 올리고 나면 엔진이 0%부터 진행률을 알린다.
-                e("load", 0);
+                if span.start == 0.0 {
+                    e("load", 0);
+                }
                 let result = voicedoc_core::stt::local::transcribe(
                     &model::path_in(&models, info),
                     audio,
                     &opts,
-                    move |p| e("transcribe", p),
+                    move |p| e("transcribe", span.overall(p)),
                     &cancel,
                 );
                 if let Some(m) = &marker {

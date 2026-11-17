@@ -1,6 +1,12 @@
 import { DOC_LABELS, FORMAT_LABELS, TRANSLATE_TARGETS } from "../lib/types";
 import type { AiTask, DocKind, Format, Item, SettingsView } from "../lib/types";
 
+function clock(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
+}
+
 const DOC_ORDER: DocKind[] = ["original", "summary", "minutes", "translation"];
 const FORMAT_ORDER: Format[] = ["docx", "pdf", "md", "txt"];
 
@@ -113,6 +119,15 @@ export function Workspace({
         )}
         {!hasKey && <span className="hint">AI 기능은 설정에서 API 키를 넣으면 쓸 수 있습니다.</span>}
       </div>
+
+      {activeDoc === "original" && (item.transcript?.unrecognized?.length ?? 0) > 0 && (
+        <div className="notice" role="alert">
+          <p>
+            다음 구간은 말소리가 있지만 받아 적지 못했습니다. 원본을 직접 확인해 주세요:{" "}
+            {item.transcript!.unrecognized!.map(([s, e]) => `${clock(s)}~${clock(e)}`).join(", ")}
+          </p>
+        </div>
+      )}
 
       <textarea
         className="editor"

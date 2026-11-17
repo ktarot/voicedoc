@@ -153,6 +153,9 @@ pub fn transcribe(
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_suppress_blank(true);
+    // 앞에서 받아 적은 문장을 다음 구간의 참고로 넘기지 않는다. 넘기면 한 번 잘못 적힌 문장이
+    // 계속 참고가 되어, 그 뒤로 끝까지 같은 말만 되풀이하는 일이 생긴다.
+    params.set_no_context(true);
     if let Some(prompt) = opts.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
         params.set_initial_prompt(prompt);
     }
@@ -190,5 +193,5 @@ pub fn transcribe(
         Some(l) => Some(l),
         None => whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_string),
     };
-    Ok(Transcript { language, duration_ms: audio::duration_ms(samples.len()), segments })
+    Ok(Transcript { language, duration_ms: audio::duration_ms(samples.len()), segments, unrecognized: Vec::new() })
 }
