@@ -5,7 +5,7 @@ import { Dialog, Progress, Toast } from "./components/ui";
 import type { ToastData } from "./components/ui";
 import { Workspace } from "./components/Workspace";
 import { api, isPreview } from "./lib/api";
-import { DOC_LABELS } from "./lib/types";
+import { BUSY_MESSAGE, DOC_LABELS, STAGE_STATUS, isBusy } from "./lib/types";
 import type { AiTask, DocKind, Item, ModelView, Provider, Settings, SettingsView } from "./lib/types";
 
 const AI_DOC: Record<AiTask["kind"], DocKind> = {
@@ -117,8 +117,7 @@ export default function App() {
       const subs = await Promise.all([
         b.onJobProgress((p) =>
           updateItem(p.jobId, (it) =>
-            it.status === "decoding" || it.status === "transcribing"
-              ? { status: p.stage === "decode" ? "decoding" : "transcribing", percent: p.percent }
+            isBusy(it.status) ? { status: STAGE_STATUS[p.stage], percent: p.percent }
               : {},
           ),
         ),
@@ -445,7 +444,7 @@ export default function App() {
                     <p>변환을 중지했습니다. 목록에서 「다시」를 누르면 다시 시도합니다.</p>
                   ) : (
                     <>
-                      <p>{selected.status === "decoding" ? "오디오를 읽고 있습니다…" : "음성을 글로 바꾸고 있습니다…"}</p>
+                      <p>{BUSY_MESSAGE[selected.status]}</p>
                       <Progress percent={selected.percent} label="변환 진행률" />
                     </>
                   )}

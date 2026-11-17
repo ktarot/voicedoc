@@ -20,6 +20,7 @@ const USAGE: &str = "\
   --prompt <문장>         고유명사 등 인식 힌트
   --cpu                   그래픽카드가 있어도 CPU로만 인식
   --cloud                 로컬 대신 OpenAI 클라우드 인식 (OPENAI_API_KEY 필요)
+  --keep-silence          침묵·잡음 구간을 건너뛰지 않고 전체를 인식
   --timestamps            문단마다 시각 표시
   --out <폴더>            저장 폴더. 기본값은 입력 파일과 같은 폴더
   --formats <목록>        저장 형식. 기본값 docx,md,txt,pdf
@@ -38,6 +39,7 @@ struct Args {
     lang: Option<String>,
     prompt: Option<String>,
     cpu: bool,
+    keep_silence: bool,
     cloud: bool,
     timestamps: bool,
     out: Option<PathBuf>,
@@ -57,6 +59,7 @@ fn parse_args() -> std::result::Result<Args, String> {
         lang: None,
         prompt: None,
         cpu: false,
+        keep_silence: false,
         cloud: false,
         timestamps: false,
         out: None,
@@ -75,6 +78,7 @@ fn parse_args() -> std::result::Result<Args, String> {
             "--lang" => a.lang = Some(value("--lang")?),
             "--prompt" => a.prompt = Some(value("--prompt")?),
             "--cpu" => a.cpu = true,
+            "--keep-silence" => a.keep_silence = true,
             "--cloud" => a.cloud = true,
             "--timestamps" => a.timestamps = true,
             "--out" => a.out = Some(value("--out")?.into()),
@@ -140,7 +144,26 @@ fn resolve_model(a: &Args, cancel: &Cancel) -> Result<PathBuf> {
 }
 
 fn transcribe(a: &Args, samples: &[f32], cancel: &Cancel) -> Result<Transcript> {
-    let opts = SttOptions { language: a.lang.clone(), prompt: a.prompt.clone(), cpu_only: a.cpu };
+    let opts = SttOptions { language: a.lang.clone(), prompt: a.prompt.clone(), cpu_only: a.cpu, keep_silence: a.keep_silence };
+    let started = std::time::Instant::now();
+    let scanned = std::sync::atomic::AtomicBool::new(false);
+    voicedoc_core::stt::transcribe_speech(
+        samples,
+        &opts,
+        cancel,
+        &|p| {
+            if p == 100 && !scanned.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                eprintln!("말소리 구간 찾기: {:.1}초", started.elapsed().as_secs_f64());
+            }
+        },
+        |audio| {
+            eprintln!("  인식할 말소리 {:.0}초", audio.len() as f32 / audio::SAMPLE_RATE as f32);
+            engine(a, audio, &opts, cancel)
+        },
+    )
+}
+
+fn engine(a: &Args, samples: &[f32], opts: &SttOptions, cancel: &Cancel) -> Result<Transcript> {
     if a.cloud {
         let cfg = cloud::CloudSttConfig {
             api_key: std::env::var("OPENAI_API_KEY").unwrap_or_default(),
@@ -148,7 +171,7 @@ fn transcribe(a: &Args, samples: &[f32], cancel: &Cancel) -> Result<Transcript> 
             base_url: std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| cloud::DEFAULT_BASE_URL.into()),
         };
-        return cloud::transcribe(&cfg, samples, &opts, |p| eprintln!("  클라우드 인식 {p}%"), cancel);
+        return cloud::transcribe(&cfg, samples, opts, |p| eprintln!("  클라우드 인식 {p}%"), cancel);
     }
     #[cfg(feature = "local-stt")]
     {
@@ -163,7 +186,7 @@ fn transcribe(a: &Args, samples: &[f32], cancel: &Cancel) -> Result<Transcript> 
         let result = voicedoc_core::stt::local::transcribe(
             &model_path,
             samples,
-            &opts,
+            opts,
             move |p| {
                 if p >= last + 10 {
                     last = p;
@@ -205,6 +228,9 @@ fn run(a: &Args) -> Result<()> {
         transcript.segments.len(),
         transcript.language.as_deref().unwrap_or("?")
     );
+    if transcript.segments.is_empty() {
+        return Err(Error::Stt("이 파일에서 말소리를 찾지 못했습니다".into()));
+    }
     let body = transcript.to_text(a.timestamps);
     println!("{body}");
 

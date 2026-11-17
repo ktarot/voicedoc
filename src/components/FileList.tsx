@@ -1,9 +1,12 @@
+import { isBusy } from "../lib/types";
 import type { Item, ItemStatus } from "../lib/types";
 import { Progress } from "./ui";
 
 const STATUS: Record<ItemStatus, string> = {
   queued: "대기 중",
   decoding: "오디오 읽는 중",
+  scanning: "말소리 구간 찾는 중",
+  loading: "모델 불러오는 중",
   transcribing: "인식 중",
   done: "완료",
   error: "실패",
@@ -31,14 +34,14 @@ export function FileList({
   return (
     <ul className="file-list">
       {items.map((item) => {
-        const busy = item.status === "decoding" || item.status === "transcribing";
+        const busy = isBusy(item.status);
         return (
           <li key={item.id} className={`file ${item.id === selectedId ? "file-selected" : ""}`}>
             <button className="file-main" onClick={() => onSelect(item.id)} title={item.path}>
               <span className="file-name">{item.name}</span>
               <span className={`status status-${item.status}`}>
                 {STATUS[item.status]}
-                {busy && ` ${Math.round(item.percent)}%`}
+                {busy && item.status !== "loading" && ` ${Math.round(item.percent)}%`}
               </span>
               {busy && <Progress percent={item.percent} label={`${item.name} 진행률`} />}
               {item.status === "error" && <span className="file-error">{item.error}</span>}

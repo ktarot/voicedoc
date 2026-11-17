@@ -6,7 +6,7 @@ description = "VoiceDoc 핵심 라이브러리: 오디오 디코딩, 음성 인�
 
 [features]
 default = ["local-stt"]
-local-stt = ["dep:whisper-rs", "dep:memmap2"]
+local-stt = ["dep:whisper-rs", "whisper-rs/raw-api", "dep:memmap2"]
 # 그래픽카드 가속 (NVIDIA·AMD·Intel 공통). 빌드에 Vulkan SDK가 필요하다.
 vulkan = ["local-stt", "whisper-rs/vulkan", "whisper-rs/raw-api"]
 

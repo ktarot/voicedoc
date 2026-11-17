@@ -174,6 +174,21 @@ export function SettingsDialog({
           </p>
         </div>
 
+        <div className="field">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={!settings.keepSilence}
+              onChange={(e) => onPatch({ keepSilence: !e.target.checked })}
+            />
+            침묵·잡음 구간 건너뛰기
+          </label>
+          <p className="help">
+            말소리가 있는 구간만 골라 인식합니다. 조용한 구간에서 없는 말이 적히거나 같은 문장이 되풀이되는 것을 막고 인식도
+            빨라집니다. 아주 작은 목소리가 빠진다면 끄세요.
+          </p>
+        </div>
+
         <div className="field-grid">
           <div className="field">
             <label htmlFor="language">음성 언어</label>

@@ -3,18 +3,12 @@
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, Once};
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
 use super::SttOptions;
 use crate::audio;
 use crate::{Cancel, Error, Result, Segment, Transcript};
-
-static LOG_HOOK: Once = Once::new();
-
-/// 한 번에 하나만 인식한다. 같은 그래픽카드에서 두 인식을 동시에 돌리면 안정적이지 않다.
-static RUN: Mutex<()> = Mutex::new(());
 
 fn default_threads() -> i32 {
     let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
@@ -49,7 +43,7 @@ pub fn accelerator() -> Option<String> {
 /// 앱은 이 DLL을 지연 로드하므로, 확인 없이 쓰면 드라이버 없는 PC에서 종료된다.
 #[cfg(feature = "vulkan")]
 fn prepare_vulkan() {
-    static CHECK: Once = Once::new();
+    static CHECK: std::sync::Once = std::sync::Once::new();
     CHECK.call_once(|| {
         #[cfg(windows)]
         {
@@ -70,6 +64,66 @@ unsafe extern "C" fn abort_trampoline(user_data: *mut c_void) -> bool {
     (*(user_data as *const AtomicBool)).load(Ordering::SeqCst)
 }
 
+/// 마지막으로 불러온 모델. 여러 파일을 연달아 인식할 때 매번 다시 읽어 그래픽카드에 올리지 않도록 둔다.
+/// 다른 모델이나 다른 장치 설정으로 인식하면 바꿔 든다.
+struct Loaded {
+    path: std::path::PathBuf,
+    /// 같은 이름으로 파일이 바뀌었는지 알아보기 위한 크기와 수정 시각
+    stamp: (u64, Option<std::time::SystemTime>),
+    want_gpu: bool,
+    ctx: WhisperContext,
+}
+
+static LOADED: std::sync::Mutex<Option<Loaded>> = std::sync::Mutex::new(None);
+
+/// 불러 둔 모델을 내려놓는다 (모델 파일을 지울 때 등).
+pub fn unload() {
+    *LOADED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+fn new_state(model_path: &Path, want_gpu: bool) -> Result<WhisperState> {
+    let meta = std::fs::metadata(model_path)?;
+    let stamp = (meta.len(), meta.modified().ok());
+    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    let reusable = loaded
+        .as_ref()
+        .is_some_and(|l| l.path == model_path && l.stamp == stamp && l.want_gpu == want_gpu);
+    if !reusable {
+        // 새 모델을 올리기 전에 먼저 내려놓아 메모리를 두 배로 쓰지 않게 한다.
+        *loaded = None;
+        // whisper.cpp는 윈도에서 한글이 들어간 경로(예: C:\\Users\\홍길동)의 파일을 열지 못한다.
+        // 그래서 파일을 직접 열어 메모리 맵으로 넘긴다. 맵은 읽기 전용이며 불러오는 동안만 쓴다.
+        let file = std::fs::File::open(model_path)?;
+        // 안전성: 모델 파일은 앱 전용 폴더에 있고 불러오는 동안 수정하지 않는다.
+        let map = unsafe { memmap2::Mmap::map(&file) }?;
+        #[cfg(feature = "vulkan")]
+        prepare_vulkan();
+        let load = |use_gpu: bool| -> Result<WhisperContext> {
+            let mut params = WhisperContextParameters::default();
+            params.use_gpu = use_gpu;
+            // whisper.cpp 1.8의 기본값. 그래픽카드에서 더 빠르고 메모리를 덜 쓴다 (whisper-rs는 기본으로 끈다).
+            params.flash_attn = use_gpu;
+            WhisperContext::new_from_buffer_with_params(&map, params)
+                .map_err(|e| Error::Model(format!("모델을 불러오지 못했습니다 (파일이 손상되었을 수 있습니다): {e}")))
+        };
+        // 그래픽카드에 올리지 못하면(메모리 부족, 드라이버 문제 등) CPU로 다시 시도한다.
+        let ctx = match load(want_gpu) {
+            Err(_) if want_gpu => load(false)?,
+            other => other?,
+        };
+        *loaded = Some(Loaded { path: model_path.to_path_buf(), stamp, want_gpu, ctx });
+    }
+    let ctx = &loaded.as_ref().expect("방금 채웠다").ctx;
+    match ctx.create_state() {
+        Ok(state) => Ok(state),
+        Err(e) => {
+            // 상태를 만들지 못하는 모델은 다음에 다시 불러오도록 버린다.
+            *loaded = None;
+            Err(Error::Stt(e.to_string()))
+        }
+    }
+}
+
 /// 16kHz 모노 샘플을 텍스트로 바꾼다. `progress`에는 0~100 값이 전달된다.
 pub fn transcribe(
     model_path: &Path,
@@ -78,38 +132,17 @@ pub fn transcribe(
     progress: impl FnMut(i32) + 'static,
     cancel: &Cancel,
 ) -> Result<Transcript> {
-    // whisper.cpp가 표준 오류로 쏟아내는 기록을 막는다.
-    LOG_HOOK.call_once(whisper_rs::install_logging_hooks);
+    super::quiet_engine_logs();
 
-    let _running = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    let _running = super::engine_lock();
     cancel.check()?;
 
     if !model_path.is_file() {
         return Err(Error::Model("인식 모델 파일이 없습니다. 먼저 모델을 내려받아 주세요".into()));
     }
-    // whisper.cpp는 윈도에서 한글이 들어간 경로(예: C:\\Users\\홍길동)의 파일을 열지 못한다.
-    // 그래서 파일을 직접 열어 메모리 맵으로 넘긴다. 맵은 읽기 전용이며 불러오는 동안만 쓴다.
-    let file = std::fs::File::open(model_path)?;
-    // 안전성: 모델 파일은 앱 전용 폴더에 있고 불러오는 동안 수정하지 않는다.
-    let map = unsafe { memmap2::Mmap::map(&file) }?;
-    #[cfg(feature = "vulkan")]
-    prepare_vulkan();
-    let load = |use_gpu: bool| -> Result<WhisperState> {
-        let mut params = WhisperContextParameters::default();
-        params.use_gpu = use_gpu;
-        // whisper.cpp 1.8의 기본값. 그래픽카드에서 더 빠르고 메모리를 덜 쓴다 (whisper-rs는 기본으로 끈다).
-        params.flash_attn = use_gpu;
-        let ctx = WhisperContext::new_from_buffer_with_params(&map, params)
-            .map_err(|e| Error::Model(format!("모델을 불러오지 못했습니다 (파일이 손상되었을 수 있습니다): {e}")))?;
-        ctx.create_state().map_err(|e| Error::Stt(e.to_string()))
-    };
     let want_gpu = cfg!(feature = "vulkan") && !opts.cpu_only;
-    // 그래픽카드에 올리지 못하면(메모리 부족, 드라이버 문제 등) CPU로 다시 시도한다.
-    let mut state = match load(want_gpu) {
-        Err(_) if want_gpu => load(false)?,
-        other => other?,
-    };
-    drop(map);
+    let mut state = new_state(model_path, want_gpu)?;
+    cancel.check()?;
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_n_threads(default_threads());
