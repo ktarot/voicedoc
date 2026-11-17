@@ -340,6 +340,8 @@ select {
   overflow-wrap: anywhere;
 }
 .status-decoding,
+.status-scanning,
+.status-loading,
 .status-transcribing {
   color: var(--accent);
 }

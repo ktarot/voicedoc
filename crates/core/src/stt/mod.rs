@@ -42,14 +42,16 @@ const MIN_ENGINE_SAMPLES: usize = crate::audio::SAMPLE_RATE as usize * 12 / 10;
 /// 말소리 구간만 골라 `engine`으로 인식하고, 시각을 원래 위치로 되돌린 뒤 결과를 정리한다.
 ///
 /// 로컬·클라우드 인식 모두 이 함수를 거친다. `engine`은 16kHz 모노 표본을 받아 인식한다.
+/// `scan_progress`에는 말소리 구간을 찾는 동안 0~100 값이 전달된다.
 pub fn transcribe_speech(
     samples: &[f32],
     opts: &SttOptions,
     cancel: &crate::Cancel,
+    scan_progress: &(dyn Fn(i32) + Sync),
     engine: impl FnOnce(&[f32]) -> crate::Result<crate::Transcript>,
 ) -> crate::Result<crate::Transcript> {
     let duration_ms = crate::audio::duration_ms(samples.len());
-    let packed = if opts.keep_silence { None } else { pack_speech(samples) };
+    let packed = if opts.keep_silence { None } else { pack_speech(samples, scan_progress, cancel) };
     cancel.check()?;
 
     let mut transcript = match &packed {
@@ -78,15 +80,15 @@ pub fn transcribe_speech(
 }
 
 /// 말소리만 이어 붙인 음성. 말소리 감지를 쓸 수 없으면 None (음성 전체를 그대로 인식).
-fn pack_speech(samples: &[f32]) -> Option<vad::Packed> {
+fn pack_speech(samples: &[f32], progress: &(dyn Fn(i32) + Sync), cancel: &crate::Cancel) -> Option<vad::Packed> {
     #[cfg(feature = "local-stt")]
     {
-        let probs = vad::speech_probabilities(samples).ok()?;
+        let probs = vad::speech_probabilities(samples, progress, cancel).ok()?;
         Some(vad::Packed::new(samples, &vad::regions_from_probs(&probs, samples.len())))
     }
     #[cfg(not(feature = "local-stt"))]
     {
-        let _ = samples;
+        let _ = (samples, progress, cancel);
         None
     }
 }

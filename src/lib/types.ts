@@ -68,7 +68,7 @@ export interface AiOutput {
 
 export interface JobProgress {
   jobId: string;
-  stage: "decode" | "transcribe";
+  stage: "decode" | "scan" | "load" | "transcribe";
   percent: number;
 }
 
@@ -85,7 +85,33 @@ export interface AiDelta {
 
 export type DocKind = "original" | "summary" | "minutes" | "translation";
 
-export type ItemStatus = "queued" | "decoding" | "transcribing" | "done" | "error" | "cancelled";
+export type ItemStatus =
+  | "queued"
+  | "decoding"
+  | "scanning"
+  | "loading"
+  | "transcribing"
+  | "done"
+  | "error"
+  | "cancelled";
+
+const BUSY: ItemStatus[] = ["decoding", "scanning", "loading", "transcribing"];
+export const isBusy = (status: ItemStatus) => BUSY.includes(status);
+
+export const STAGE_STATUS: Record<JobProgress["stage"], ItemStatus> = {
+  decode: "decoding",
+  scan: "scanning",
+  load: "loading",
+  transcribe: "transcribing",
+};
+
+/** 진행 중일 때 큰 화면에 보여 줄 설명 */
+export const BUSY_MESSAGE: Partial<Record<ItemStatus, string>> = {
+  decoding: "오디오를 읽고 있습니다…",
+  scanning: "말소리가 있는 구간을 찾고 있습니다…",
+  loading: "인식 모델을 불러오고 있습니다… (처음 한 번은 수십 초가 걸릴 수 있습니다)",
+  transcribing: "음성을 글로 바꾸고 있습니다…",
+};
 
 export interface Item {
   id: string;

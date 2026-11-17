@@ -76,7 +76,7 @@ fn skips_silence_and_keeps_original_times() {
     let audio: Vec<f32> = [&silence[..], &clip, &silence, &clip, &silence].concat();
     let opts = SttOptions { language: Some("en".into()), ..Default::default() };
 
-    let t = stt::transcribe_speech(&audio, &opts, &cancel, |speech| {
+    let t = stt::transcribe_speech(&audio, &opts, &cancel, &|_| {}, |speech| {
         // 엔진에는 말소리 구간만 넘어가야 한다 (전체 142초 중 약 22초).
         assert!(speech.len() < 16_000 * 30, "엔진에 넘어간 길이: {}초", speech.len() / 16_000);
         local::transcribe(&model, speech, &opts, |_| {}, &cancel)
@@ -99,7 +99,7 @@ fn skips_silence_and_keeps_original_times() {
 fn silence_only_gives_no_text() {
     let cancel = Cancel::new();
     let audio = vec![0.0f32; 16_000 * 60];
-    let t = stt::transcribe_speech(&audio, &SttOptions::default(), &cancel, |_| {
+    let t = stt::transcribe_speech(&audio, &SttOptions::default(), &cancel, &|_| {}, |_| {
         panic!("말소리가 없으면 엔진을 부르지 않는다")
     })
     .unwrap();
@@ -114,7 +114,7 @@ fn keep_silence_passes_audio_through() {
     let audio = vec![0.0f32; 16_000 * 5];
     let opts = SttOptions { keep_silence: true, ..Default::default() };
     let mut seen = 0;
-    let t = stt::transcribe_speech(&audio, &opts, &cancel, |speech| {
+    let t = stt::transcribe_speech(&audio, &opts, &cancel, &|_| {}, |speech| {
         seen = speech.len();
         Ok(voicedoc_core::Transcript::default())
     })

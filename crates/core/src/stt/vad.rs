@@ -145,10 +145,25 @@ fn ms(samples: usize) -> u64 {
     samples as u64 * 1000 / RATE as u64
 }
 
-/// 프레임별 말소리 확률을 구한다 (Silero VAD, CPU에서 실행).
+/// 한 번에 처리하는 길이 (5분). 이 단위로 여러 코어에 나눠 맡기고 진행률·취소를 확인한다.
 #[cfg(feature = "local-stt")]
-pub fn speech_probabilities(samples: &[f32]) -> crate::Result<Vec<f32>> {
+const CHUNK_FRAMES: usize = 9375;
+/// 조각 앞에 덧붙여 읽는 길이 (약 1초). 감지 모델은 앞 소리를 기억하며 판단하므로,
+/// 조각 첫머리의 판단이 흔들리지 않도록 미리 들려준 뒤 그 부분의 결과는 버린다.
+#[cfg(feature = "local-stt")]
+const WARMUP_FRAMES: usize = 32;
+
+/// 프레임별 말소리 확률을 구한다 (Silero VAD, CPU의 여러 코어로 나눠 실행).
+/// `progress`에는 0~100 값이 전달된다.
+#[cfg(feature = "local-stt")]
+pub fn speech_probabilities(
+    samples: &[f32],
+    progress: &(dyn Fn(i32) + Sync),
+    cancel: &crate::Cancel,
+) -> crate::Result<Vec<f32>> {
     use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use whisper_rs::whisper_rs_sys as sys;
 
     use crate::Error;
@@ -172,40 +187,96 @@ pub fn speech_probabilities(samples: &[f32]) -> crate::Result<Vec<f32>> {
     }
     unsafe extern "C" fn close(_ctx: *mut c_void) {}
 
+    /// 감지 모델 하나. 스레드마다 따로 만든다.
+    struct Detector(*mut sys::whisper_vad_context);
+    impl Detector {
+        fn new() -> Option<Self> {
+            let mut reader = Reader { pos: 0 };
+            // 안전성: `reader`는 모델을 다 읽는 이 호출 동안만 쓰인다.
+            let ctx = unsafe {
+                let mut loader = sys::whisper_model_loader {
+                    context: &mut reader as *mut Reader as *mut c_void,
+                    read: Some(read),
+                    eof: Some(eof),
+                    close: Some(close),
+                };
+                let mut params = sys::whisper_vad_default_context_params();
+                // 계산이 아주 작아서 스레드를 나누면 오히려 느리다. 대신 조각을 여러 코어에 나눈다.
+                params.n_threads = 1;
+                params.use_gpu = false;
+                sys::whisper_vad_init_with_params(&mut loader, params)
+            };
+            (!ctx.is_null()).then_some(Self(ctx))
+        }
+
+        fn run(&mut self, samples: &[f32]) -> Option<Vec<f32>> {
+            // 안전성: 확률 배열은 다음 호출이나 해제 전에 복사한다.
+            unsafe {
+                let ok = sys::whisper_vad_detect_speech(self.0, samples.as_ptr(), samples.len() as i32);
+                let n = sys::whisper_vad_n_probs(self.0);
+                let ptr = sys::whisper_vad_probs(self.0);
+                (ok && n > 0 && !ptr.is_null()).then(|| std::slice::from_raw_parts(ptr, n as usize).to_vec())
+            }
+        }
+    }
+    impl Drop for Detector {
+        fn drop(&mut self) {
+            unsafe { sys::whisper_vad_free(self.0) }
+        }
+    }
+
     super::quiet_engine_logs();
     let _running = super::engine_lock();
-    if samples.len() > i32::MAX as usize {
-        return Err(Error::Stt("음성이 너무 깁니다".into()));
+    if samples.is_empty() {
+        return Ok(Vec::new());
     }
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 4);
-    let mut reader = Reader { pos: 0 };
-    // 안전성: `reader`와 `samples`는 이 함수가 끝날 때까지 살아 있고,
-    // 만든 VAD 컨텍스트는 함수 안에서 해제한다. 확률 배열은 해제 전에 복사한다.
-    unsafe {
-        let mut loader = sys::whisper_model_loader {
-            context: &mut reader as *mut Reader as *mut c_void,
-            read: Some(read),
-            eof: Some(eof),
-            close: Some(close),
-        };
-        let mut params = sys::whisper_vad_default_context_params();
-        params.n_threads = threads as i32;
-        params.use_gpu = false;
-        let ctx = sys::whisper_vad_init_with_params(&mut loader, params);
-        if ctx.is_null() {
-            return Err(Error::Stt("말소리 감지 모델을 불러오지 못했습니다".into()));
+
+    let chunk = CHUNK_FRAMES * FRAME;
+    let n_chunks = samples.len().div_ceil(chunk);
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8).min(n_chunks);
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let results: Mutex<Vec<Option<Vec<f32>>>> = Mutex::new(vec![None; n_chunks]);
+
+    progress(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                let Some(mut detector) = Detector::new() else {
+                    failed.store(true, Ordering::SeqCst);
+                    return;
+                };
+                loop {
+                    let i = next.fetch_add(1, Ordering::SeqCst);
+                    if i >= n_chunks || cancel.is_cancelled() || failed.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let start = i * chunk;
+                    let end = (start + chunk).min(samples.len());
+                    let warmup = if i == 0 { 0 } else { WARMUP_FRAMES };
+                    match detector.run(&samples[start - warmup * FRAME..end]) {
+                        Some(mut probs) => {
+                            probs.drain(..warmup.min(probs.len()));
+                            results.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(probs);
+                            let n = done.fetch_add(1, Ordering::SeqCst) + 1;
+                            progress((n * 100 / n_chunks) as i32);
+                        }
+                        None => {
+                            failed.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                    }
+                }
+            });
         }
-        let ok = sys::whisper_vad_detect_speech(ctx, samples.as_ptr(), samples.len() as i32);
-        let n = sys::whisper_vad_n_probs(ctx);
-        let ptr = sys::whisper_vad_probs(ctx);
-        let probs = if ok && n > 0 && !ptr.is_null() {
-            Some(std::slice::from_raw_parts(ptr, n as usize).to_vec())
-        } else {
-            None
-        };
-        sys::whisper_vad_free(ctx);
-        probs.ok_or_else(|| Error::Stt("말소리 구간을 찾지 못했습니다".into()))
+    });
+    cancel.check()?;
+    let results = results.into_inner().unwrap_or_else(|e| e.into_inner());
+    if failed.load(Ordering::SeqCst) || results.iter().any(Option::is_none) {
+        return Err(Error::Stt("말소리 구간을 찾지 못했습니다".into()));
     }
+    Ok(results.into_iter().flatten().flatten().collect())
 }
 
 #[cfg(test)]

@@ -110,8 +110,8 @@ export function createMockBackend(): Backend {
     deleteModel: async (id) => void (models.find((x) => x.id === id)!.downloaded = false),
     async transcribe(jobId, path) {
       if (path.includes("오류")) throw "오디오를 읽을 수 없습니다: 지원하지 않는 파일 형식입니다";
-      for (const stage of ["decode", "transcribe"] as const) {
-        for (let p = 0; p <= 100; p += stage === "decode" ? 25 : 5) {
+      for (const stage of ["decode", "scan", "load", "transcribe"] as const) {
+        for (let p = 0; p <= (stage === "load" ? 0 : 100); p += stage === "transcribe" ? 5 : 25) {
           await sleep(60);
           check(jobId);
           jobProgress.emit({ jobId, stage, percent: p });

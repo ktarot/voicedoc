@@ -187,6 +187,7 @@ async fn download_model(app: AppHandle, jobs: State<'_, Jobs>, id: String) -> Cm
 fn delete_model(app: AppHandle, id: String) -> CmdResult<()> {
     let info = model::find(&id).ok_or("알 수 없는 모델입니다")?;
     let path = model::path_in(&models_dir(&app)?, info);
+    voicedoc_core::stt::local::unload();
     match std::fs::remove_file(path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
         _ => Ok(()),
@@ -199,7 +200,7 @@ fn delete_model(app: AppHandle, id: String) -> CmdResult<()> {
 #[serde(rename_all = "camelCase")]
 struct JobProgress {
     job_id: String,
-    /// "decode" 또는 "transcribe"
+    /// "decode"(오디오 읽기), "scan"(말소리 구간 찾기), "load"(모델 불러오기), "transcribe"(인식)
     stage: &'static str,
     percent: i32,
 }
@@ -253,8 +254,10 @@ async fn transcribe(
             cpu_only: !settings.use_gpu,
             keep_silence: settings.keep_silence,
         };
-        emit("transcribe", 0);
-        let transcript = voicedoc_core::stt::transcribe_speech(&samples, &opts, &cancel, |audio| Ok(match settings.stt_mode {
+        emit("scan", 0);
+        let scan_emit = emit.clone();
+        let scan_progress = move |p: i32| scan_emit("scan", p);
+        let transcript = voicedoc_core::stt::transcribe_speech(&samples, &opts, &cancel, &scan_progress, |audio| Ok(match settings.stt_mode {
             SttMode::Cloud => {
                 let cfg = cloud::CloudSttConfig {
                     api_key: openai_key,
@@ -262,6 +265,7 @@ async fn transcribe(
                     base_url: cloud::DEFAULT_BASE_URL.into(),
                 };
                 let e = emit.clone();
+                e("transcribe", 0);
                 cloud::transcribe(&cfg, audio, &opts, move |p| e("transcribe", p), &cancel)?
             }
             SttMode::Local => {
@@ -272,6 +276,8 @@ async fn transcribe(
                 if let Some(m) = &marker {
                     let _ = std::fs::write(m, b"");
                 }
+                // 모델을 처음 올릴 때는 몇 초에서 수십 초가 걸린다. 올리고 나면 엔진이 0%부터 진행률을 알린다.
+                e("load", 0);
                 let result = voicedoc_core::stt::local::transcribe(
                     &model::path_in(&models, info),
                     audio,

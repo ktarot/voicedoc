@@ -145,7 +145,22 @@ fn resolve_model(a: &Args, cancel: &Cancel) -> Result<PathBuf> {
 
 fn transcribe(a: &Args, samples: &[f32], cancel: &Cancel) -> Result<Transcript> {
     let opts = SttOptions { language: a.lang.clone(), prompt: a.prompt.clone(), cpu_only: a.cpu, keep_silence: a.keep_silence };
-    voicedoc_core::stt::transcribe_speech(samples, &opts, cancel, |audio| engine(a, audio, &opts, cancel))
+    let started = std::time::Instant::now();
+    let scanned = std::sync::atomic::AtomicBool::new(false);
+    voicedoc_core::stt::transcribe_speech(
+        samples,
+        &opts,
+        cancel,
+        &|p| {
+            if p == 100 && !scanned.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                eprintln!("말소리 구간 찾기: {:.1}초", started.elapsed().as_secs_f64());
+            }
+        },
+        |audio| {
+            eprintln!("  인식할 말소리 {:.0}초", audio.len() as f32 / audio::SAMPLE_RATE as f32);
+            engine(a, audio, &opts, cancel)
+        },
+    )
 }
 
 fn engine(a: &Args, samples: &[f32], opts: &SttOptions, cancel: &Cancel) -> Result<Transcript> {
