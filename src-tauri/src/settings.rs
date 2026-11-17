@@ -25,6 +25,8 @@ pub struct Settings {
     pub prompt: String,
     /// 그래픽카드가 있으면 인식에 쓴다.
     pub use_gpu: bool,
+    /// 침묵·잡음 구간을 건너뛰지 않고 음성 전체를 인식한다 (기본은 건너뛴다).
+    pub keep_silence: bool,
     pub provider: Provider,
     pub claude_model: String,
     pub openai_model: String,
@@ -44,6 +46,7 @@ impl Default for Settings {
             timestamps: false,
             prompt: String::new(),
             use_gpu: true,
+            keep_silence: false,
             provider: Provider::Claude,
             claude_model: Provider::Claude.default_model().into(),
             openai_model: Provider::OpenAi.default_model().into(),

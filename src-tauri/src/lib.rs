@@ -251,9 +251,10 @@ async fn transcribe(
             language: Some(settings.language.trim().to_string()).filter(|l| !l.is_empty()),
             prompt: Some(settings.prompt.clone()).filter(|p| !p.trim().is_empty()),
             cpu_only: !settings.use_gpu,
+            keep_silence: settings.keep_silence,
         };
         emit("transcribe", 0);
-        let transcript = match settings.stt_mode {
+        let transcript = voicedoc_core::stt::transcribe_speech(&samples, &opts, &cancel, |audio| Ok(match settings.stt_mode {
             SttMode::Cloud => {
                 let cfg = cloud::CloudSttConfig {
                     api_key: openai_key,
@@ -261,7 +262,7 @@ async fn transcribe(
                     base_url: cloud::DEFAULT_BASE_URL.into(),
                 };
                 let e = emit.clone();
-                cloud::transcribe(&cfg, &samples, &opts, move |p| e("transcribe", p), &cancel)?
+                cloud::transcribe(&cfg, audio, &opts, move |p| e("transcribe", p), &cancel)?
             }
             SttMode::Local => {
                 let info = model::find(&settings.model_id)
@@ -273,7 +274,7 @@ async fn transcribe(
                 }
                 let result = voicedoc_core::stt::local::transcribe(
                     &model::path_in(&models, info),
-                    &samples,
+                    audio,
                     &opts,
                     move |p| e("transcribe", p),
                     &cancel,
@@ -283,7 +284,10 @@ async fn transcribe(
                 }
                 result?
             }
-        };
+        }))?;
+        if transcript.segments.is_empty() {
+            return Err(Error::Stt("이 파일에서 말소리를 찾지 못했습니다".into()));
+        }
         let text = transcript.to_text(settings.timestamps);
         Ok(TranscribeResult { transcript, text })
     })

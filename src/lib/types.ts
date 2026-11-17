@@ -11,6 +11,8 @@ export interface Settings {
   prompt: string;
   /** 그래픽카드가 있으면 인식에 쓴다 */
   useGpu: boolean;
+  /** 침묵·잡음 구간을 건너뛰지 않고 전체를 인식 */
+  keepSilence: boolean;
   provider: Provider;
   claudeModel: string;
   openaiModel: string;

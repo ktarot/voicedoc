@@ -62,6 +62,7 @@ export function createMockBackend(): Backend {
     timestamps: false,
     prompt: "",
     useGpu: true,
+    keepSilence: false,
     provider: "claude",
     claudeModel: "claude-opus-5-5",
     openaiModel: "gpt-5",

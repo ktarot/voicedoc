@@ -3,18 +3,12 @@
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, Once};
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
 use super::SttOptions;
 use crate::audio;
 use crate::{Cancel, Error, Result, Segment, Transcript};
-
-static LOG_HOOK: Once = Once::new();
-
-/// 한 번에 하나만 인식한다. 같은 그래픽카드에서 두 인식을 동시에 돌리면 안정적이지 않다.
-static RUN: Mutex<()> = Mutex::new(());
 
 fn default_threads() -> i32 {
     let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
@@ -49,7 +43,7 @@ pub fn accelerator() -> Option<String> {
 /// 앱은 이 DLL을 지연 로드하므로, 확인 없이 쓰면 드라이버 없는 PC에서 종료된다.
 #[cfg(feature = "vulkan")]
 fn prepare_vulkan() {
-    static CHECK: Once = Once::new();
+    static CHECK: std::sync::Once = std::sync::Once::new();
     CHECK.call_once(|| {
         #[cfg(windows)]
         {
@@ -78,10 +72,9 @@ pub fn transcribe(
     progress: impl FnMut(i32) + 'static,
     cancel: &Cancel,
 ) -> Result<Transcript> {
-    // whisper.cpp가 표준 오류로 쏟아내는 기록을 막는다.
-    LOG_HOOK.call_once(whisper_rs::install_logging_hooks);
+    super::quiet_engine_logs();
 
-    let _running = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    let _running = super::engine_lock();
     cancel.check()?;
 
     if !model_path.is_file() {
