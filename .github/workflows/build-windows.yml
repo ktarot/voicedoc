@@ -12,6 +12,10 @@ jobs:
       # Vulkan 셰이더 생성 단계가 폴더를 깊게 만들어 윈도 경로 길이 제한(260자)을 넘는다.
       # 빌드 폴더를 짧은 경로에 둔다.
       CARGO_TARGET_DIR: C:\t
+      # 인식 엔진(whisper.cpp)은 기본으로 "빌드하는 PC의 CPU"에 맞춰 컴파일된다. 빌드 서버에 AVX-512가 있으면
+      # AVX-512가 없는 사용자 PC(인텔 12~14세대 코어 등)에서 CPU 인식 중 프로그램이 꺼진다.
+      # 그래서 AVX2(+FMA, F16C, BMI2)까지만 쓰도록 고정한다. whisper-rs-sys가 GGML_* 환경 변수를 CMake로 넘긴다.
+      GGML_NATIVE: "OFF"
     steps:
       - uses: actions/checkout@v4
 
@@ -42,6 +46,15 @@ jobs:
 
       - name: 핵심 라이브러리 테스트
         run: cargo test -p voicedoc-core --release
+
+      # 빌드 서버의 CPU와, 엔진에 실제로 켜진 명령어를 기록한다 (AVX512 = 0 이어야 한다).
+      - name: 인식 엔진 CPU 명령어 확인
+        shell: pwsh
+        run: |
+          (Get-CimInstance Win32_Processor).Name
+          cargo run --release -p voicedoc-core --bin voicedoc-cli -- --system-info
+          $info = cargo run -q --release -p voicedoc-core --bin voicedoc-cli -- --system-info | Out-String
+          if ($info -match "AVX512 = 1") { throw "엔진이 AVX-512를 쓰도록 빌드되었습니다" }
 
       - name: 설치 파일 빌드
         run: npx tauri build

@@ -21,6 +21,38 @@ pub struct SttOptions {
     pub keep_silence: bool,
 }
 
+/// 인식 엔진이 이 PC의 CPU에서 돌 수 있는지 확인한다.
+///
+/// 엔진은 AVX2·FMA·F16C 명령어를 쓰도록 빌드된다. 이 명령어가 없는 CPU(2013년 이전 인텔,
+/// 2017년 이전 AMD 등)에서 그대로 돌리면 오류 메시지 없이 프로그램이 꺼지므로 미리 막는다.
+pub fn check_cpu() -> crate::Result<()> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let missing: Vec<&str> = [
+            ("AVX2", std::arch::is_x86_feature_detected!("avx2")),
+            ("FMA", std::arch::is_x86_feature_detected!("fma")),
+            ("F16C", std::arch::is_x86_feature_detected!("f16c")),
+        ]
+        .into_iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(name, _)| name)
+        .collect();
+        if !missing.is_empty() {
+            return Err(crate::Error::Stt(format!(
+                "이 PC의 CPU는 음성 인식에 필요한 명령어({})를 지원하지 않습니다. 설정에서 클라우드 인식을 사용해 주세요",
+                missing.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// 인식 엔진이 빌드될 때 켜진 CPU 명령어 등 (문제 해결용).
+#[cfg(feature = "local-stt")]
+pub fn engine_info() -> String {
+    whisper_rs::print_system_info().trim().to_string()
+}
+
 /// whisper.cpp가 표준 오류로 쏟아내는 기록을 막는다.
 #[cfg(feature = "local-stt")]
 pub(crate) fn quiet_engine_logs() {
@@ -71,6 +103,10 @@ pub fn transcribe_speech(
     scan_progress: &(dyn Fn(i32) + Sync),
     mut engine: impl FnMut(&[f32], Span) -> crate::Result<crate::Transcript>,
 ) -> crate::Result<crate::Transcript> {
+    if !opts.keep_silence {
+        // 말소리 감지도 같은 엔진(ggml)으로 CPU에서 돈다.
+        check_cpu()?;
+    }
     let blocks = if opts.keep_silence { None } else { speech_blocks(samples, scan_progress, cancel) };
     cancel.check()?;
     // 말소리 감지를 쓰지 않으면 음성 전체를 10분씩 그대로 넘긴다.

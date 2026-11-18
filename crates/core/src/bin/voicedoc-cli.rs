@@ -22,6 +22,7 @@ const USAGE: &str = "\
   --cloud                 로컬 대신 OpenAI 클라우드 인식 (OPENAI_API_KEY 필요)
   --keep-silence          침묵·잡음 구간을 건너뛰지 않고 전체를 인식
   --timestamps            문단마다 시각 표시
+  --system-info           인식 엔진이 쓰는 CPU 명령어를 보여 주고 끝낸다
   --out <폴더>            저장 폴더. 기본값은 입력 파일과 같은 폴더
   --formats <목록>        저장 형식. 기본값 docx,md,txt,pdf
   --summary | --minutes | --translate <언어>
@@ -99,6 +100,19 @@ fn parse_args() -> std::result::Result<Args, String> {
                 }
             }
             "--ai-model" => a.ai_model = value("--ai-model")?,
+            "--system-info" => {
+                #[cfg(feature = "local-stt")]
+                println!("엔진: {}", voicedoc_core::stt::engine_info());
+                #[cfg(target_arch = "x86_64")]
+                println!(
+                    "이 CPU: AVX2={} FMA={} F16C={} AVX512F={}",
+                    std::arch::is_x86_feature_detected!("avx2"),
+                    std::arch::is_x86_feature_detected!("fma"),
+                    std::arch::is_x86_feature_detected!("f16c"),
+                    std::arch::is_x86_feature_detected!("avx512f"),
+                );
+                std::process::exit(0);
+            }
             "-h" | "--help" => return Err(String::new()),
             s if s.starts_with("--") => return Err(format!("알 수 없는 옵션: {s}")),
             _ if input.is_none() => input = Some(PathBuf::from(arg)),

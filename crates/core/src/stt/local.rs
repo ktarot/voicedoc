@@ -133,6 +133,7 @@ pub fn transcribe(
     cancel: &Cancel,
 ) -> Result<Transcript> {
     super::quiet_engine_logs();
+    super::check_cpu()?;
 
     let _running = super::engine_lock();
     cancel.check()?;
