@@ -250,6 +250,9 @@ fn run(a: &Args) -> Result<()> {
     if transcript.segments.is_empty() {
         return Err(Error::Stt("이 파일에서 말소리를 찾지 못했습니다".into()));
     }
+    for warning in &transcript.warnings {
+        eprintln!("주의: {warning}");
+    }
     for (start, end) in &transcript.unrecognized {
         eprintln!(
             "주의: {}~{} 구간은 말소리가 있지만 받아 적지 못했습니다",

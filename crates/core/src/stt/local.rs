@@ -194,5 +194,5 @@ pub fn transcribe(
         Some(l) => Some(l),
         None => whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_string),
     };
-    Ok(Transcript { language, duration_ms: audio::duration_ms(samples.len()), segments, unrecognized: Vec::new() })
+    Ok(Transcript { language, duration_ms: audio::duration_ms(samples.len()), segments, ..Default::default() })
 }

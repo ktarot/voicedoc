@@ -144,7 +144,7 @@ pub fn transcribe(
         }
     }
     progress(100);
-    Ok(Transcript { language, duration_ms: audio::duration_ms(samples.len()), segments, unrecognized: Vec::new() })
+    Ok(Transcript { language, duration_ms: audio::duration_ms(samples.len()), segments, ..Default::default() })
 }
 
 #[cfg(test)]

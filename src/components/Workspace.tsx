@@ -120,6 +120,12 @@ export function Workspace({
         {!hasKey && <span className="hint">AI 기능은 설정에서 API 키를 넣으면 쓸 수 있습니다.</span>}
       </div>
 
+      {activeDoc === "original" &&
+        item.transcript?.warnings?.map((w) => (
+          <div className="notice" role="alert" key={w}>
+            <p>{w}</p>
+          </div>
+        ))}
       {activeDoc === "original" && (item.transcript?.unrecognized?.length ?? 0) > 0 && (
         <div className="notice" role="alert">
           <p>

@@ -159,3 +159,34 @@ fn long_audio_goes_to_the_engine_in_blocks() {
     assert!(t.segments[2].text.starts_with("셋째 묶음"));
     assert_eq!(t.duration_ms, 25 * 60_000);
 }
+
+/// 엔진이 말소리 일부를 건너뛰면 그 부분만 다시 인식해 채운다.
+#[test]
+fn refills_speech_the_engine_skipped() {
+    let cancel = Cancel::new();
+    let clip = audio::decode_file(&root().join("testdata/jfk.wav"), |_| {}, &cancel).unwrap();
+    let audio: Vec<f32> = [&clip[..], &clip, &clip].concat();
+    // 건너뛰기를 끈 상태: 엔진에 33초가 통째로 넘어간다 (실제로 문제가 난 경우).
+    let opts = SttOptions { keep_silence: true, language: Some("en".into()), ..Default::default() };
+    let mut calls = Vec::new();
+    let t = stt::transcribe_speech(&audio, &opts, &cancel, &|_| {}, |input, _| {
+        calls.push(input.len() / 16_000);
+        let seconds = input.len() as u64 * 1000 / 16_000;
+        let segments = if calls.len() == 1 {
+            // 처음 3초만 받아 적고 나머지를 건너뛴다
+            vec![voicedoc_core::Segment { start_ms: 0, end_ms: 3_000, text: "첫 문장입니다.".into() }]
+        } else {
+            vec![voicedoc_core::Segment { start_ms: 0, end_ms: seconds, text: "다시 인식한 부분입니다.".into() }]
+        };
+        Ok(voicedoc_core::Transcript { segments, ..Default::default() })
+    })
+    .unwrap();
+
+    assert_eq!(calls.len(), 2, "엔진 호출: {calls:?}");
+    assert_eq!(calls[0], 33);
+    let texts: Vec<&str> = t.segments.iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(texts, vec!["첫 문장입니다.", "다시 인식한 부분입니다."]);
+    assert!((2_500..=3_500).contains(&t.segments[1].start_ms), "다시 인식한 부분의 시각: {}", t.segments[1].start_ms);
+    assert!(t.unrecognized.is_empty(), "{:?}", t.unrecognized);
+    assert!(t.warnings.is_empty());
+}

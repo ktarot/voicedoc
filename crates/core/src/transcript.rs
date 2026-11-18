@@ -17,6 +17,9 @@ pub struct Transcript {
     /// 말소리가 감지됐는데도 받아 적은 글이 없는 구간 (시작·끝 ms). 사용자에게 알려 직접 확인하게 한다.
     #[serde(default)]
     pub unrecognized: Vec<(u64, u64)>,
+    /// 인식은 끝났지만 사용자에게 알려야 할 문제 (예: 말소리 감지를 쓰지 못함).
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// 이보다 긴 침묵이 있으면 문단을 나눈다.
@@ -94,6 +97,7 @@ mod tests {
     fn groups_by_silence() {
         let t = Transcript {
             unrecognized: Vec::new(),
+            warnings: Vec::new(),
             language: None,
             duration_ms: 20_000,
             segments: vec![
@@ -118,6 +122,7 @@ mod tests {
         let long = "가".repeat(450) + ".";
         let t = Transcript {
             unrecognized: Vec::new(),
+            warnings: Vec::new(),
             language: None,
             duration_ms: 0,
             segments: vec![seg(0, 1000, &long), seg(1000, 2000, "다음 문장.")],

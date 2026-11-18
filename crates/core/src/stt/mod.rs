@@ -103,59 +103,74 @@ pub fn transcribe_speech(
     scan_progress: &(dyn Fn(i32) + Sync),
     mut engine: impl FnMut(&[f32], Span) -> crate::Result<crate::Transcript>,
 ) -> crate::Result<crate::Transcript> {
-    if !opts.keep_silence {
-        // 말소리 감지도 같은 엔진(ggml)으로 CPU에서 돈다.
-        check_cpu()?;
-    }
-    let blocks = if opts.keep_silence { None } else { speech_blocks(samples, scan_progress, cancel) };
+    let mut warnings = Vec::new();
+    // 말소리 구간. 건너뛰기를 꺼도 구해 둔다: 빠진 곳을 찾아 다시 인식하고 경고하는 데 쓴다.
+    let speech = match speech_regions(samples, scan_progress, cancel) {
+        Ok(found) => found,
+        Err(crate::Error::Cancelled) => return Err(crate::Error::Cancelled),
+        Err(e) => {
+            warnings.push(format!(
+                "말소리 감지를 쓰지 못해 음성 전체를 그대로 인식했습니다. 빠진 문장이 있을 수 있습니다 ({e})"
+            ));
+            None
+        }
+    };
     cancel.check()?;
-    // 말소리 감지를 쓰지 않으면 음성 전체를 10분씩 그대로 넘긴다.
-    let blocks = blocks.unwrap_or_else(|| cloud::split_points(samples).into_iter().map(|r| vec![r]).collect());
+
+    let blocks: Vec<Vec<(usize, usize)>> = match (&speech, opts.keep_silence) {
+        (Some((regions, probs)), false) => vad::blocks(regions, probs),
+        // 건너뛰기를 끄거나 말소리 감지를 못 쓰면 음성 전체를 10분씩 그대로 넘긴다.
+        _ => cloud::split_points(samples).into_iter().map(|r| vec![r]).collect(),
+    };
+    let speech_list = speech.as_ref().map(|(r, _)| r.as_slice());
 
     let total: usize = blocks.iter().flatten().map(|(s, e)| e - s).sum();
     let mut language = opts.language.clone();
-    let mut segments = Vec::new();
+    let mut segments: Vec<crate::Segment> = Vec::new();
     let mut done = 0usize;
     for regions in &blocks {
         cancel.check()?;
-        let mut packed = vad::Packed::new(samples, regions);
-        if packed.is_empty() {
-            continue;
-        }
         let len: usize = regions.iter().map(|(s, e)| e - s).sum();
         let span = Span { start: done as f32 / total as f32, end: (done + len) as f32 / total as f32 };
         done += len;
-        if packed.samples.len() < MIN_ENGINE_SAMPLES {
-            packed.samples.resize(MIN_ENGINE_SAMPLES, 0.0);
-        }
-        let part = engine(&packed.samples, span)?;
+        let Some(part) = run_engine(samples, regions, span, &mut engine)? else { continue };
         if language.is_none() {
             language = part.language;
         }
-        segments.extend(part.segments.into_iter().map(|mut seg| {
-            let (start, end) = (seg.start_ms, seg.end_ms);
-            seg.start_ms = packed.start_to_original_ms(start);
-            seg.end_ms = packed.end_to_original_ms(end).max(seg.start_ms);
-            seg
-        }));
+        let mut block_segments = part.segments;
+
+        // 엔진이 말소리 일부를 통째로 건너뛰는 일이 있다 (특히 large-v3-turbo). 빈 곳만 잘라 한 번 더 인식한다.
+        let end_span = Span { start: span.end, end: span.end };
+        for retry in skipped_regions(regions, speech_list, &block_segments) {
+            cancel.check()?;
+            if let Some(again) = run_engine(samples, &retry, end_span, &mut engine)? {
+                block_segments.extend(again.segments);
+            }
+        }
+        block_segments.sort_by_key(|s| s.start_ms);
+        segments.extend(block_segments);
+    }
+    // 문제를 살필 때: VOICEDOC_DEBUG_SEGMENTS를 주면 정리하기 전의 인식 결과를 표준 오류로 보여 준다.
+    if std::env::var_os("VOICEDOC_DEBUG_SEGMENTS").is_some() {
+        for seg in &segments {
+            eprintln!("[원본 {:>7}~{:>7}ms] {}", seg.start_ms, seg.end_ms, seg.text);
+        }
     }
     let segments = clean::clean(segments, opts.prompt.as_deref());
-    let speech: Vec<(u64, u64)> = if opts.keep_silence {
-        Vec::new()
-    } else {
-        let ms = |x: usize| crate::audio::duration_ms(x);
-        blocks.iter().flatten().map(|&(s, e)| (ms(s), ms(e))).collect()
-    };
+    let ms = |x: usize| crate::audio::duration_ms(x);
+    let speech_ms: Vec<(u64, u64)> =
+        speech_list.unwrap_or_default().iter().map(|&(s, e)| (ms(s), ms(e))).collect();
     Ok(crate::Transcript {
         language,
         duration_ms: crate::audio::duration_ms(samples.len()),
-        unrecognized: unrecognized_speech(&speech, &segments),
+        unrecognized: unrecognized_speech(&speech_ms, &segments),
+        warnings,
         segments,
     })
 }
 
-/// 말소리가 이만큼 이어졌는데 글이 하나도 없으면 받아 적지 못한 것으로 본다 (1분).
-const UNRECOGNIZED_MIN_MS: u64 = 60_000;
+/// 말소리가 이만큼 이어졌는데 글이 하나도 없으면 받아 적지 못한 것으로 본다 (20초).
+const UNRECOGNIZED_MIN_MS: u64 = 20_000;
 
 /// 말소리 구간 가운데 받아 적은 글이 전혀 없는 긴 부분을 찾는다.
 ///
@@ -198,6 +213,48 @@ mod tests {
         Segment { start_ms: start, end_ms: end, text: "말".into() }
     }
 
+    const SEC: usize = 16_000;
+
+    #[test]
+    fn finds_skipped_speech() {
+        // 엔진에 0~31초를 넘겼는데 0~4.3초와 30~31초만 받아 적었다 (실제로 겪은 경우).
+        let block = [(0, 31 * SEC)];
+        let speech = [(0, 31 * SEC)];
+        let segments = [seg(0, 4_300), seg(30_000, 31_000)];
+        let r = skipped_regions(&block, Some(&speech), &segments);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(r[0], vec![(4_300 * SEC / 1000, 30 * SEC)]);
+        // 말소리 감지 없이도 8초 넘게 비면 다시 인식한다
+        assert_eq!(skipped_regions(&block, None, &segments).len(), 1);
+    }
+
+    #[test]
+    fn does_not_retry_silence_or_short_gaps() {
+        let block = [(0, 60 * SEC)];
+        // 10~50초가 비었지만 그 사이에 말소리가 없다
+        let speech = [(0, 10 * SEC), (50 * SEC, 60 * SEC)];
+        let segments = [seg(0, 10_000), seg(50_000, 60_000)];
+        assert!(skipped_regions(&block, Some(&speech), &segments).is_empty());
+        // 말소리가 2초뿐이면 다시 인식하지 않는다
+        let speech = [(0, 10 * SEC), (30 * SEC, 32 * SEC), (50 * SEC, 60 * SEC)];
+        assert!(skipped_regions(&block, Some(&speech), &segments).is_empty());
+        // 글 사이가 3초면 건너뛴 것으로 보지 않는다
+        let segments = [seg(0, 27_000), seg(30_000, 60_000)];
+        assert!(skipped_regions(&block, Some(&[(0, 60 * SEC)]), &segments).is_empty());
+        // 말소리 감지 없이 5초 빈 것은 조용한 곳일 수 있어 다시 인식하지 않는다
+        let segments = [seg(0, 20_000), seg(25_000, 60_000)];
+        assert!(skipped_regions(&block, None, &segments).is_empty());
+    }
+
+    #[test]
+    fn retries_only_voiced_parts_of_the_block() {
+        // 묶음은 말소리 두 조각(0~10초, 40~70초), 엔진은 0~10초만 받아 적었다.
+        let block = [(0, 10 * SEC), (40 * SEC, 70 * SEC)];
+        let speech = [(0, 10 * SEC), (40 * SEC, 70 * SEC)];
+        let r = skipped_regions(&block, Some(&speech), &[seg(0, 10_000)]);
+        assert_eq!(r, vec![vec![(40 * SEC, 70 * SEC)]]);
+    }
+
     #[test]
     fn span_scales_progress() {
         let span = Span { start: 0.25, end: 0.75 };
@@ -219,7 +276,7 @@ mod tests {
         let min = 60_000;
         // 글 사이가 30분 비었지만 그 사이에는 말소리가 없다 → 알리지 않는다.
         let speech = [(0, 5 * min), (35 * min, 40 * min)];
-        let segments = [seg(0, 5 * min), seg(35 * min, 40 * min - 20_000)];
+        let segments = [seg(0, 5 * min), seg(35 * min, 40 * min - 10_000)];
         assert!(unrecognized_speech(&speech, &segments).is_empty());
         // 말소리가 전혀 받아 적히지 않은 경우
         assert_eq!(unrecognized_speech(&speech, &[]), vec![(0, 40 * min)]);
@@ -227,21 +284,103 @@ mod tests {
     }
 }
 
-/// 말소리 구간을 인식 묶음으로 나눈 것. 말소리 감지를 쓸 수 없으면 None (음성 전체를 그대로 인식).
-/// 말소리가 전혀 없으면 빈 목록: 엔진에 넘기면 없는 말을 지어낼 뿐이므로 아무것도 넘기지 않는다.
-fn speech_blocks(
+/// 원래 음성의 `regions`만 이어 붙여 엔진에 넘기고, 결과 시각을 원래 위치로 되돌린다.
+fn run_engine(
+    samples: &[f32],
+    regions: &[(usize, usize)],
+    span: Span,
+    engine: &mut impl FnMut(&[f32], Span) -> crate::Result<crate::Transcript>,
+) -> crate::Result<Option<crate::Transcript>> {
+    let mut packed = vad::Packed::new(samples, regions);
+    if packed.is_empty() {
+        return Ok(None);
+    }
+    if packed.samples.len() < MIN_ENGINE_SAMPLES {
+        packed.samples.resize(MIN_ENGINE_SAMPLES, 0.0);
+    }
+    let mut part = engine(&packed.samples, span)?;
+    for seg in &mut part.segments {
+        let (start, end) = (seg.start_ms, seg.end_ms);
+        seg.start_ms = packed.start_to_original_ms(start);
+        seg.end_ms = packed.end_to_original_ms(end).max(seg.start_ms);
+    }
+    Ok(Some(part))
+}
+
+const RATE: usize = crate::audio::SAMPLE_RATE as usize;
+/// 글 사이가 이보다 짧으면 건너뛴 것으로 보지 않는다.
+const SKIP_MIN_GAP: usize = RATE * 4;
+/// 빈 곳에 말소리가 이만큼은 있어야 다시 인식한다 (말소리 감지를 쓸 수 있을 때).
+const SKIP_MIN_SPEECH: usize = RATE * 3;
+/// 말소리 감지를 못 쓸 때는 빈 곳이 이만큼 길어야 다시 인식한다.
+/// 조용한 곳을 엔진에 다시 넘기면 없는 말을 지어낼 수 있어 기준을 높게 둔다.
+const SKIP_MIN_GAP_UNKNOWN: usize = RATE * 8;
+
+/// 엔진이 받아 적지 않고 건너뛴 말소리 부분을 찾는다 (원래 음성의 표본 위치).
+///
+/// `block`은 엔진에 넘긴 구간, `speech`는 말소리 감지 결과(없으면 None), `segments`는 엔진 결과(원래 시각)다.
+/// 돌려주는 목록 하나하나가 다시 인식할 묶음이다.
+pub fn skipped_regions(
+    block: &[(usize, usize)],
+    speech: Option<&[(usize, usize)]>,
+    segments: &[crate::Segment],
+) -> Vec<Vec<(usize, usize)>> {
+    let (Some(first), Some(last)) = (block.first(), block.last()) else { return Vec::new() };
+    let pos = |ms: u64| (ms as usize).saturating_mul(RATE) / 1000;
+
+    // 글이 없는 틈: 묶음 시작~첫 글, 글 사이, 마지막 글~묶음 끝
+    let mut gaps = Vec::new();
+    let mut cursor = first.0;
+    let mut sorted: Vec<&crate::Segment> = segments.iter().collect();
+    sorted.sort_by_key(|s| s.start_ms);
+    for seg in sorted {
+        let start = pos(seg.start_ms);
+        if start > cursor {
+            gaps.push((cursor, start));
+        }
+        cursor = cursor.max(pos(seg.end_ms));
+    }
+    if last.1 > cursor {
+        gaps.push((cursor, last.1));
+    }
+
+    let clip = |list: &[(usize, usize)], g: (usize, usize)| -> Vec<(usize, usize)> {
+        list.iter().map(|&(s, e)| (s.max(g.0), e.min(g.1))).filter(|(s, e)| e > s).collect()
+    };
+    gaps.into_iter()
+        .filter(|(s, e)| e - s >= SKIP_MIN_GAP)
+        .filter_map(|gap| {
+            // 엔진에 넘긴 부분 가운데 이 틈에 든 것
+            let inside = clip(block, gap);
+            let (pieces, needed) = match speech {
+                Some(speech) => {
+                    let voiced: Vec<_> = clip(speech, gap).into_iter().flat_map(|r| clip(&inside, r)).collect();
+                    (voiced, SKIP_MIN_SPEECH)
+                }
+                None => (inside, SKIP_MIN_GAP_UNKNOWN),
+            };
+            let amount: usize = pieces.iter().map(|(s, e)| e - s).sum();
+            (amount >= needed).then_some(pieces)
+        })
+        .collect()
+}
+
+/// 말소리 구간과 프레임별 말소리 확률. 이 빌드에 말소리 감지가 없으면 None.
+fn speech_regions(
     samples: &[f32],
     progress: &(dyn Fn(i32) + Sync),
     cancel: &crate::Cancel,
-) -> Option<Vec<Vec<(usize, usize)>>> {
+) -> crate::Result<Option<(Vec<(usize, usize)>, Vec<f32>)>> {
     #[cfg(feature = "local-stt")]
     {
-        let probs = vad::speech_probabilities(samples, progress, cancel).ok()?;
-        Some(vad::blocks(&vad::regions_from_probs(&probs, samples.len()), &probs))
+        // 말소리 감지도 인식 엔진(ggml)으로 CPU에서 돈다.
+        check_cpu()?;
+        let probs = vad::speech_probabilities(samples, progress, cancel)?;
+        Ok(Some((vad::regions_from_probs(&probs, samples.len()), probs)))
     }
     #[cfg(not(feature = "local-stt"))]
     {
         let _ = (samples, progress, cancel);
-        None
+        Ok(None)
     }
 }

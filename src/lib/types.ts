@@ -51,6 +51,8 @@ export interface Transcript {
   segments: Segment[];
   /** 말소리가 감지됐지만 받아 적지 못한 구간 [시작 ms, 끝 ms] */
   unrecognized?: [number, number][];
+  /** 인식은 끝났지만 알려야 할 문제 */
+  warnings?: string[];
 }
 
 export interface TranscribeResult {
